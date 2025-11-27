@@ -7,6 +7,8 @@ const axios = require('axios');
 const crypto = require('crypto');
 const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
+const bcrypt = require('bcryptjs');
+
 
 const app = express();
 app.use(express.json());
@@ -143,8 +145,8 @@ const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const ADMIN_KEY = process.env.ADMIN_KEY || 'secret123';
 
 // Default Pixel & LP (fallback)
-const DEFAULT_META_PIXEL_ID = '1340877837162888';
-const DEFAULT_PUBLIC_LP_URL = 'https://tourmaline-flan-4abc0c.netlify.app/';
+const DEFAULT_META_PIXEL_ID = '1430358881781923';
+const DEFAULT_PUBLIC_LP_URL = 'btcapi.netlify.app/';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const PORT = process.env.PORT || 3000;
@@ -1008,6 +1010,102 @@ app.get('/dashboard', (req, res) => {
   } catch (err) {
     console.error('❌ Error in /dashboard:', err);
     res.status(500).send('Internal error');
+  }
+});
+
+// ----- HTML Dashboard: /dashboard -----
+app.get('/dashboard', (req, res) => {
+  ...
+});
+
+// ----- DEV: Seed admin + client + keys (one-time helper) -----
+app.get('/dev/seed-admin', async (req, res) => {
+  try {
+    const key = req.query.admin_key;
+    if (key !== ADMIN_KEY) {
+      return res.status(401).json({ ok: false, error: 'Invalid admin_key' });
+    }
+
+    // 1) Check if any admin user already exists
+    const existingAdmin = db.prepare(
+      'SELECT * FROM users WHERE role = ? LIMIT 1'
+    ).get('admin');
+
+    if (existingAdmin) {
+      return res.json({
+        ok: true,
+        message: 'Admin already exists, nothing to do.',
+        admin_email: existingAdmin.email
+      });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    const email = 'admin@uts.local';   // dev ke liye, baad me change kar dena
+    const password = 'Admin@123';      // dev ke liye, UI banne ke baad reset karna
+
+    const password_hash = await bcrypt.hash(password, 10);
+
+    // 2) Insert admin user
+    const insertUser = db.prepare(`
+      INSERT INTO users (email, password_hash, role, created_at)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    const userResult = insertUser.run(email, password_hash, 'admin', now);
+    const userId = userResult.lastInsertRowid;
+
+    // 3) Random public/secret keys
+    const publicKey = 'PUB_' + Math.random().toString(36).slice(2, 10);
+    const secretKey = 'SEC_' + Math.random().toString(36).slice(2, 10);
+
+    // 4) Insert client row for this admin
+    const insertClient = db.prepare(`
+      INSERT INTO clients (
+        name,
+        slug,
+        owner_user_id,
+        public_key,
+        secret_key,
+        default_pixel_id,
+        default_meta_token,
+        plan,
+        max_channels,
+        is_active,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    insertClient.run(
+      'Rahul Main Workspace',
+      'rahul-main',
+      userId,
+      publicKey,
+      secretKey,
+      process.env.META_PIXEL_ID || null,
+      process.env.META_ACCESS_TOKEN || null,
+      'starter',
+      3,
+      1,
+      now
+    );
+
+    return res.json({
+      ok: true,
+      message: 'Admin + client + keys created ✅ (one-time)',
+      admin_login: {
+        email,
+        password
+      },
+      tracking_keys: {
+        public_key: publicKey,
+        secret_key: secretKey
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in /dev/seed-admin:', err);
+    res.status(500).json({ ok: false, error: 'Internal error' });
   }
 });
 
