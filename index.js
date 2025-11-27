@@ -1,4 +1,3 @@
-
 // Load environment variables from .env (Render / local dono ke liye)
 require('dotenv').config();
 
@@ -8,7 +7,6 @@ const crypto = require('crypto');
 const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
 const bcrypt = require('bcryptjs');
-
 
 const app = express();
 app.use(express.json());
@@ -273,17 +271,16 @@ app.post('/telegram-webhook', async (req, res) => {
         await approveJoinRequest(chat.id, user.id);
         console.log('✅ Approved join request for user:', user.id);
       } catch (e) {
-  console.error('❌ Telegram approveChatJoinRequest error RAW:');
-  console.error('MESSAGE:', e.message);
-  console.error('IS_AXIOS_ERROR:', e.isAxiosError);
-  if (e.response) {
-    console.error('STATUS:', e.response.status);
-    console.error('DATA:', JSON.stringify(e.response.data, null, 2));
-  } else {
-    console.error('NO RESPONSE OBJECT, FULL ERROR:', e);
-  }
-}
-
+        console.error('❌ Telegram approveChatJoinRequest error RAW:');
+        console.error('MESSAGE:', e.message);
+        console.error('IS_AXIOS_ERROR:', e.isAxiosError);
+        if (e.response) {
+          console.error('STATUS:', e.response.status);
+          console.error('DATA:', JSON.stringify(e.response.data, null, 2));
+        } else {
+          console.error('NO RESPONSE OBJECT, FULL ERROR:', e);
+        }
+      }
 
       // 2) Fire Meta CAPI in background (not blocking webhook)
       try {
@@ -467,34 +464,58 @@ async function sendMetaLeadEvent(user, joinRequest) {
   const eventId = generateEventId();
 
   const userData = {
-    external_id: externalIdHash,
-    ...(fbcForThisLead ? { fbc: fbcForThisLead } : {}),
-    ...(fbpForThisLead ? { fbp: fbpForThisLead } : {}),
-    ...(ipForThisLead ? { client_ip_address: ipForThisLead } : {}),
-    ...(uaForThisLead ? { client_user_agent: uaForThisLead } : {}),
+    external_id: externalIdHash
   };
 
-  const customData = {
-    ...(sourceForThisLead ? { source: sourceForThisLead } : {}),
-    ...(utmSourceForThisLead ? { utm_source: utmSourceForThisLead } : {}),
-    ...(utmMediumForThisLead ? { utm_medium: utmMediumForThisLead } : {}),
-    ...(utmCampaignForThisLead ? { utm_campaign: utmCampaignForThisLead } : {}),
-    ...(utmContentForThisLead ? { utm_content: utmContentForThisLead } : {}),
-    ...(utmTermForThisLead ? { utm_term: utmTermForThisLead } : {}),
+  if (fbcForThisLead) {
+    userData.fbc = fbcForThisLead;
+  }
+  if (fbpForThisLead) {
+    userData.fbp = fbpForThisLead;
+  }
+  if (ipForThisLead) {
+    userData.client_ip_address = ipForThisLead;
+  }
+  if (uaForThisLead) {
+    userData.client_user_agent = uaForThisLead;
+  }
+
+  const customData = {};
+
+  if (sourceForThisLead) {
+    customData.source = sourceForThisLead;
+  }
+  if (utmSourceForThisLead) {
+    customData.utm_source = utmSourceForThisLead;
+  }
+  if (utmMediumForThisLead) {
+    customData.utm_medium = utmMediumForThisLead;
+  }
+  if (utmCampaignForThisLead) {
+    customData.utm_campaign = utmCampaignForThisLead;
+  }
+  if (utmContentForThisLead) {
+    customData.utm_content = utmContentForThisLead;
+  }
+  if (utmTermForThisLead) {
+    customData.utm_term = utmTermForThisLead;
+  }
+
+  const eventBody = {
+    event_name: 'Lead',
+    event_time: eventTime,
+    event_id: eventId,
+    event_source_url: lpUrl,
+    action_source: 'website',
+    user_data: userData
   };
+
+  if (Object.keys(customData).length > 0) {
+    eventBody.custom_data = customData;
+  }
 
   const payload = {
-    data: [
-      {
-        event_name: 'Lead',
-        event_time: eventTime,
-        event_id: eventId,
-        event_source_url: lpUrl,
-        action_source: 'website',
-        user_data: userData,
-        ...(Object.keys(customData).length ? { custom_data: customData } : {}),
-      },
-    ],
+    data: [eventBody]
   };
 
   const res = await axios.post(url, payload);
@@ -1011,11 +1032,6 @@ app.get('/dashboard', (req, res) => {
     console.error('❌ Error in /dashboard:', err);
     res.status(500).send('Internal error');
   }
-});
-
-// ----- HTML Dashboard: /dashboard -----
-app.get('/dashboard', (req, res) => {
-  ...
 });
 
 // ----- DEV: Seed admin + client + keys (one-time helper) -----
