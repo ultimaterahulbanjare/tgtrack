@@ -8,7 +8,6 @@ const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
 const bcrypt = require('bcryptjs');
 
-
 const app = express();
 app.use(express.json());
 
@@ -202,9 +201,9 @@ app.get('/debug-channels', (req, res) => {
   }
 });
 
-// ----- LP se pre-lead capture (fbc/fbp + tracking store) -----
-// NEW: SaaS-style pageview tracking (multi-client via public_key)
-// Ye route old /pre-lead ko touch nahi karta; sirf naye LPs ke liye hai.
+// ----- NEW: SaaS-style pageview tracking (multi-client via public_key) -----
+// Yaha sirf gating ho rahi hai public_key se.
+// Insert same hai jo /pre-lead use karta hai → DB error nahi aayega.
 app.post('/api/v1/track/pageview', (req, res) => {
   try {
     const {
@@ -227,6 +226,7 @@ app.post('/api/v1/track/pageview', (req, res) => {
       return res.status(400).json({ ok: false, error: 'channel_id required' });
     }
 
+    // Client lookup (multi-tenant gate)
     const client = db
       .prepare('SELECT * FROM clients WHERE public_key = ?')
       .get(String(public_key));
@@ -241,32 +241,8 @@ app.post('/api/v1/track/pageview', (req, res) => {
     const userAgent = req.headers['user-agent'] || null;
     const { deviceType, browser, os } = parseUserAgent(userAgent);
 
-    // Yaha hum client_id bhi store kar rahe hain (multi-tenant ke liye)
-    const stmt = db.prepare(`
-      INSERT INTO pre_leads (
-        client_id,
-        channel_id,
-        fbc,
-        fbp,
-        ip,
-        country,
-        user_agent,
-        device_type,
-        browser,
-        os,
-        source,
-        utm_source,
-        utm_medium,
-        utm_campaign,
-        utm_content,
-        utm_term,
-        created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    stmt.run(
-      client.id,
+    // Insert exactly like /pre-lead (without client_id)
+    insertPreLeadStmt.run(
       String(channel_id),
       fbc || null,
       fbp || null,
@@ -285,13 +261,14 @@ app.post('/api/v1/track/pageview', (req, res) => {
       now
     );
 
-    return res.json({ ok: true, client_id: client.id });
+    return res.json({ ok: true });
   } catch (err) {
     console.error('❌ Error in /api/v1/track/pageview:', err.message || err);
     return res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });
 
+// ----- Old LP endpoint: pre-lead capture (fbc/fbp + tracking store) -----
 app.post('/pre-lead', (req, res) => {
   try {
     const {
