@@ -1,3 +1,4 @@
+
 // Load environment variables from .env (Render / local dono ke liye)
 require('dotenv').config();
 
@@ -6,7 +7,6 @@ const axios = require('axios');
 const crypto = require('crypto');
 const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
-const bcrypt = require('bcryptjs');
 
 const app = express();
 app.use(express.json());
@@ -109,6 +109,7 @@ const insertPreLeadStmt = db.prepare(`
   )
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
+
 const getRecentPreLeadStmt = db.prepare(`
   SELECT
     id,
@@ -142,8 +143,8 @@ const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const ADMIN_KEY = process.env.ADMIN_KEY || 'secret123';
 
 // Default Pixel & LP (fallback)
-const DEFAULT_META_PIXEL_ID = '1430358881781923';
-const DEFAULT_PUBLIC_LP_URL = 'btcapi.netlify.app/';
+const DEFAULT_META_PIXEL_ID = '1340877837162888';
+const DEFAULT_PUBLIC_LP_URL = 'https://tourmaline-flan-4abc0c.netlify.app/';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const PORT = process.env.PORT || 3000;
@@ -200,9 +201,8 @@ app.get('/debug-channels', (req, res) => {
   }
 });
 
-// ----- NEW: SaaS-style pageview tracking (multi-client via public_key) -----
-// Yaha sirf gating ho rahi hai public_key se.
-// Insert same hai jo /pre-lead use karta hai → DB error nahi aayega.
+
+// ----- SaaS-style pageview tracking (LP se pageview) -----
 app.post('/api/v1/track/pageview', (req, res) => {
   try {
     const {
@@ -218,29 +218,19 @@ app.post('/api/v1/track/pageview', (req, res) => {
       utm_term,
     } = req.body || {};
 
-    if (!public_key) {
-      return res.status(400).json({ ok: false, error: 'public_key required' });
-    }
     if (!channel_id) {
-      return res.status(400).json({ ok: false, error: 'channel_id required' });
-    }
-
-    // Client lookup (multi-tenant gate)
-    const client = db
-      .prepare('SELECT * FROM clients WHERE public_key = ?')
-      .get(String(public_key));
-
-    if (!client) {
-      return res.status(403).json({ ok: false, error: 'invalid public_key' });
+      return res
+        .status(400)
+        .json({ ok: false, error: 'channel_id required' });
     }
 
     const now = Math.floor(Date.now() / 1000);
+
     const ip = getClientIp(req);
     const country = getCountryFromHeaders(req);
     const userAgent = req.headers['user-agent'] || null;
     const { deviceType, browser, os } = parseUserAgent(userAgent);
 
-    // Insert exactly like /pre-lead (without client_id)
     insertPreLeadStmt.run(
       String(channel_id),
       fbc || null,
@@ -267,7 +257,7 @@ app.post('/api/v1/track/pageview', (req, res) => {
   }
 });
 
-// ----- Old LP endpoint: pre-lead capture (fbc/fbp + tracking store) -----
+// ----- LP se pre-lead capture (fbc/fbp + tracking store) -----
 app.post('/pre-lead', (req, res) => {
   try {
     const {
@@ -337,16 +327,17 @@ app.post('/telegram-webhook', async (req, res) => {
         await approveJoinRequest(chat.id, user.id);
         console.log('✅ Approved join request for user:', user.id);
       } catch (e) {
-        console.error('❌ Telegram approveChatJoinRequest error RAW:');
-        console.error('MESSAGE:', e.message);
-        console.error('IS_AXIOS_ERROR:', e.isAxiosError);
-        if (e.response) {
-          console.error('STATUS:', e.response.status);
-          console.error('DATA:', JSON.stringify(e.response.data, null, 2));
-        } else {
-          console.error('NO RESPONSE OBJECT, FULL ERROR:', e);
-        }
-      }
+  console.error('❌ Telegram approveChatJoinRequest error RAW:');
+  console.error('MESSAGE:', e.message);
+  console.error('IS_AXIOS_ERROR:', e.isAxiosError);
+  if (e.response) {
+    console.error('STATUS:', e.response.status);
+    console.error('DATA:', JSON.stringify(e.response.data, null, 2));
+  } else {
+    console.error('NO RESPONSE OBJECT, FULL ERROR:', e);
+  }
+}
+
 
       // 2) Fire Meta CAPI in background (not blocking webhook)
       try {
@@ -530,58 +521,34 @@ async function sendMetaLeadEvent(user, joinRequest) {
   const eventId = generateEventId();
 
   const userData = {
-    external_id: externalIdHash
+    external_id: externalIdHash,
+    ...(fbcForThisLead ? { fbc: fbcForThisLead } : {}),
+    ...(fbpForThisLead ? { fbp: fbpForThisLead } : {}),
+    ...(ipForThisLead ? { client_ip_address: ipForThisLead } : {}),
+    ...(uaForThisLead ? { client_user_agent: uaForThisLead } : {}),
   };
 
-  if (fbcForThisLead) {
-    userData.fbc = fbcForThisLead;
-  }
-  if (fbpForThisLead) {
-    userData.fbp = fbpForThisLead;
-  }
-  if (ipForThisLead) {
-    userData.client_ip_address = ipForThisLead;
-  }
-  if (uaForThisLead) {
-    userData.client_user_agent = uaForThisLead;
-  }
-
-  const customData = {};
-
-  if (sourceForThisLead) {
-    customData.source = sourceForThisLead;
-  }
-  if (utmSourceForThisLead) {
-    customData.utm_source = utmSourceForThisLead;
-  }
-  if (utmMediumForThisLead) {
-    customData.utm_medium = utmMediumForThisLead;
-  }
-  if (utmCampaignForThisLead) {
-    customData.utm_campaign = utmCampaignForThisLead;
-  }
-  if (utmContentForThisLead) {
-    customData.utm_content = utmContentForThisLead;
-  }
-  if (utmTermForThisLead) {
-    customData.utm_term = utmTermForThisLead;
-  }
-
-  const eventBody = {
-    event_name: 'Lead',
-    event_time: eventTime,
-    event_id: eventId,
-    event_source_url: lpUrl,
-    action_source: 'website',
-    user_data: userData
+  const customData = {
+    ...(sourceForThisLead ? { source: sourceForThisLead } : {}),
+    ...(utmSourceForThisLead ? { utm_source: utmSourceForThisLead } : {}),
+    ...(utmMediumForThisLead ? { utm_medium: utmMediumForThisLead } : {}),
+    ...(utmCampaignForThisLead ? { utm_campaign: utmCampaignForThisLead } : {}),
+    ...(utmContentForThisLead ? { utm_content: utmContentForThisLead } : {}),
+    ...(utmTermForThisLead ? { utm_term: utmTermForThisLead } : {}),
   };
-
-  if (Object.keys(customData).length > 0) {
-    eventBody.custom_data = customData;
-  }
 
   const payload = {
-    data: [eventBody]
+    data: [
+      {
+        event_name: 'Lead',
+        event_time: eventTime,
+        event_id: eventId,
+        event_source_url: lpUrl,
+        action_source: 'website',
+        user_data: userData,
+        ...(Object.keys(customData).length ? { custom_data: customData } : {}),
+      },
+    ],
   };
 
   const res = await axios.post(url, payload);
@@ -1097,97 +1064,6 @@ app.get('/dashboard', (req, res) => {
   } catch (err) {
     console.error('❌ Error in /dashboard:', err);
     res.status(500).send('Internal error');
-  }
-});
-
-// ----- DEV: Seed admin + client + keys (one-time helper) -----
-app.get('/dev/seed-admin', async (req, res) => {
-  try {
-    const key = req.query.admin_key;
-    if (key !== ADMIN_KEY) {
-      return res.status(401).json({ ok: false, error: 'Invalid admin_key' });
-    }
-
-    // 1) Check if any admin user already exists
-    const existingAdmin = db.prepare(
-      'SELECT * FROM users WHERE role = ? LIMIT 1'
-    ).get('admin');
-
-    if (existingAdmin) {
-      return res.json({
-        ok: true,
-        message: 'Admin already exists, nothing to do.',
-        admin_email: existingAdmin.email
-      });
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-
-    const email = 'admin@uts.local';   // dev ke liye, baad me change kar dena
-    const password = 'Admin@123';      // dev ke liye, UI banne ke baad reset karna
-
-    const password_hash = await bcrypt.hash(password, 10);
-
-    // 2) Insert admin user
-    const insertUser = db.prepare(`
-      INSERT INTO users (email, password_hash, role, created_at)
-      VALUES (?, ?, ?, ?)
-    `);
-
-    const userResult = insertUser.run(email, password_hash, 'admin', now);
-    const userId = userResult.lastInsertRowid;
-
-    // 3) Random public/secret keys
-    const publicKey = 'PUB_' + Math.random().toString(36).slice(2, 10);
-    const secretKey = 'SEC_' + Math.random().toString(36).slice(2, 10);
-
-    // 4) Insert client row for this admin
-    const insertClient = db.prepare(`
-      INSERT INTO clients (
-        name,
-        slug,
-        owner_user_id,
-        public_key,
-        secret_key,
-        default_pixel_id,
-        default_meta_token,
-        plan,
-        max_channels,
-        is_active,
-        created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    insertClient.run(
-      'Rahul Main Workspace',
-      'rahul-main',
-      userId,
-      publicKey,
-      secretKey,
-      process.env.META_PIXEL_ID || null,
-      process.env.META_ACCESS_TOKEN || null,
-      'starter',
-      3,
-      1,
-      now
-    );
-
-    return res.json({
-      ok: true,
-      message: 'Admin + client + keys created ✅ (one-time)',
-      admin_login: {
-        email,
-        password
-      },
-      tracking_keys: {
-        public_key: publicKey,
-        secret_key: secretKey
-      }
-    });
-  } catch (err) {
-    console.error('❌ Error in /dev/seed-admin:', err);
-    res.status(500).json({ ok: false, error: 'Internal error' });
   }
 });
 

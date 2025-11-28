@@ -3,21 +3,6 @@ const Database = require('better-sqlite3');
 // DB file ka naam (ye hi file me sab data store hoga)
 const db = new Database('telegram_funnel.db');
 
-/**
- * NEW: Users table (login / roles)
- * Abhi sirf schema बना रहे हैं, koi auto-user insert nahi kar rahe.
- * Baad me hum /auth/register ya seed script se user bana sakte hain.
- */
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'client', -- 'admin' | 'client'
-    created_at INTEGER NOT NULL
-  );
-`);
-
 // --- Table: clients (future SaaS users / agencies) ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS clients (
@@ -45,6 +30,7 @@ db.exec(`
 `);
 
 // --- Table: joins log ---
+// NOTE: purane DB me ye columns na bhi ho sakte hain, neeche migration se add ho jayenge
 db.exec(`
   CREATE TABLE IF NOT EXISTS joins (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,23 +97,7 @@ function ensureColumns(tableName, columns) {
   }
 }
 
-/**
- * 🔹 SaaS upgrade: clients table ko multi-tenant ready bana rahe hain
- * (Ye columns ALTER TABLE se add ho jayenge agar missing hue)
- */
-ensureColumns('clients', [
-  { name: 'slug', type: 'TEXT' },               // e.g. "veerbhai-agency"
-  { name: 'owner_user_id', type: 'INTEGER' },   // FK -> users.id
-  { name: 'public_key', type: 'TEXT' },         // LP tracking ke liye
-  { name: 'secret_key', type: 'TEXT' },         // Bot/backend ke liye
-  { name: 'default_pixel_id', type: 'TEXT' },   // per client default Pixel
-  { name: 'default_meta_token', type: 'TEXT' }, // per client CAPI token
-  { name: 'plan', type: 'TEXT' },               // 'starter' | 'pro' | ...
-  { name: 'max_channels', type: 'INTEGER' },    // plan limit
-  { name: 'is_active', type: 'INTEGER' }        // 1/0
-]);
-
-// 🔹 pre_leads ke liye ensure karo ke sab nayi tracking + client columns ho
+// 🔹 pre_leads ke liye ensure karo ke sab nayi tracking columns ho
 ensureColumns('pre_leads', [
   { name: 'fbp', type: 'TEXT' },        // agar purane version me missing ho
   { name: 'ip', type: 'TEXT' },
@@ -141,12 +111,10 @@ ensureColumns('pre_leads', [
   { name: 'utm_medium', type: 'TEXT' },
   { name: 'utm_campaign', type: 'TEXT' },
   { name: 'utm_content', type: 'TEXT' },
-  { name: 'utm_term', type: 'TEXT' },
-  // NEW: multi-tenant ke liye
-  { name: 'client_id', type: 'INTEGER' }  // kis client ki LP se aaya
+  { name: 'utm_term', type: 'TEXT' }
 ]);
 
-// 🔹 joins ke liye bhi ensure karo ke sab nayi tracking + client columns ho
+// 🔹 joins ke liye bhi ensure karo ke sab nayi tracking columns ho
 ensureColumns('joins', [
   { name: 'ip', type: 'TEXT' },
   { name: 'country', type: 'TEXT' },
@@ -159,9 +127,7 @@ ensureColumns('joins', [
   { name: 'utm_medium', type: 'TEXT' },
   { name: 'utm_campaign', type: 'TEXT' },
   { name: 'utm_content', type: 'TEXT' },
-  { name: 'utm_term', type: 'TEXT' },
-  // NEW: multi-tenant ke liye
-  { name: 'client_id', type: 'INTEGER' }  // kis client ke channel ka join
+  { name: 'utm_term', type: 'TEXT' }
 ]);
 
 // --- Ensure ek default client row ho always (id=1) ---
