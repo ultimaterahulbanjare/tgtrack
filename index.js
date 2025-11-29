@@ -1038,7 +1038,34 @@ app.get('/dashboard', (req, res) => {
           </div>
 
           <div>
+            <div class="section-title">Landing page integration snippet</div>
+            <div class="muted">
+              Paste this script into your landing page. Replace <code>CHANNEL_ID_HERE</code> with the Telegram channel_id /
+              chat_id you configured below.
+            </div>
+            <pre style="margin-top:8px;background:#020617;border-radius:10px;border:1px solid #1f2937;padding:10px;font-size:11px;overflow-x:auto;">
+<code>&lt;script&gt;
+  const UTS_PUBLIC_KEY = "${client.public_key || ''}";
+  const UTS_API_BASE = "${process.env.PUBLIC_TRACKING_BASE_URL || ''}";
+  const UTS_CHANNEL_ID = "CHANNEL_ID_HERE";
+  // Example: call pageview
+  fetch(UTS_API_BASE + "/api/v1/track/pageview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      public_key: UTS_PUBLIC_KEY,
+      channel_id: UTS_CHANNEL_ID,
+      url: window.location.href,
+      user_agent: navigator.userAgent
+    })
+  });
+&lt;/script&gt;</code>
+            </pre>
+          </div>
+
+          <div>
             <div class="section-title">Last 7 Days</div>
+
             <table>
               <thead>
                 <tr>
