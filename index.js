@@ -7,9 +7,12 @@ const crypto = require('crypto');
 const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
 const bcrypt = require('bcryptjs');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 // 🔹 CORS allow for LP → backend calls
 app.use((req, res, next) => {
@@ -85,6 +88,54 @@ function parseUserAgent(uaRaw) {
   else if (ua.includes('linux')) os = 'Linux';
 
   return { deviceType, browser, os };
+}
+
+
+// ----- Auth helpers (simple HMAC token in cookie) -----
+const SESSION_SECRET = process.env.SESSION_SECRET || 'change_me_please';
+
+// Token format: "userId.signature"
+function signAuthToken(userId) {
+  const payload = String(userId);
+  const sig = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payload)
+    .digest('hex');
+  return `${payload}.${sig}`;
+}
+
+function verifyAuthToken(token) {
+  if (!token) return null;
+  const parts = String(token).split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  const expected = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payload)
+    .digest('hex');
+  if (sig !== expected) return null;
+
+  const id = parseInt(payload, 10);
+  if (!id || Number.isNaN(id)) return null;
+  return id;
+}
+
+function requireAuth(req, res, next) {
+  const token = req.cookies && req.cookies.auth;
+  const userId = verifyAuthToken(token);
+
+  if (!userId) {
+    return res.redirect('/login');
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) {
+    res.clearCookie('auth');
+    return res.redirect('/login');
+  }
+
+  req.user = user;
+  next();
 }
 
 // ----- Pre-lead (fbc/fbp + tracking) DB statements -----
@@ -170,11 +221,12 @@ function generateEventId() {
   return crypto.randomBytes(16).toString('hex');
 }
 
-
 function generateKey(prefix) {
-  const rand = crypto.randomBytes(6).toString('hex');
+  const rand = crypto.randomBytes(6).toString('hex'); // 12 hex chars
   return `${prefix}_${rand}`;
 }
+
+
 // ----- Basic health route -----
 app.get('/', (req, res) => {
   res.send('Telegram Funnel Bot running ✅');
@@ -1253,7 +1305,7 @@ app.post('/login', async (req, res) => {
     res.cookie('auth', token, {
       httpOnly: true,
       sameSite: 'lax'
-      // secure: true // HTTPS pe on karna
+      // secure: true // HTTPS only
     });
 
     return res.redirect('/panel');
@@ -1283,7 +1335,7 @@ app.get('/panel', requireAuth, (req, res) => {
     }
 
     const clients = db
-      .prepare(\`
+      .prepare(`
         SELECT
           id,
           name,
@@ -1297,7 +1349,7 @@ app.get('/panel', requireAuth, (req, res) => {
         FROM clients
         WHERE owner_user_id = ?
         ORDER BY id ASC
-      \`)
+      `)
       .all(user.id);
 
     const clientStats = clients.map((c) => {
@@ -1325,26 +1377,26 @@ app.get('/panel', requireAuth, (req, res) => {
                 ? new Date(c.created_at * 1000).toISOString().substring(0, 10)
                 : '';
 
-              return \`
+              return `
           <tr>
-            <td>\${c.name || '(no name)'}</td>
-            <td>\${c.slug || ''}</td>
-            <td><code>\${c.public_key || ''}</code></td>
-            <td><code>\${c.secret_key || ''}</code></td>
-            <td>\${c.plan || ''}</td>
-            <td>\${c.max_channels || ''}</td>
-            <td>\${status}</td>
-            <td>\${totalJoins}</td>
-            <td>\${created}</td>
+            <td>${c.name || '(no name)'}</td>
+            <td>${c.slug || ''}</td>
+            <td><code>${c.public_key || ''}</code></td>
+            <td><code>${c.secret_key || ''}</code></td>
+            <td>${c.plan || ''}</td>
+            <td>${c.max_channels || ''}</td>
+            <td>${status}</td>
+            <td>${totalJoins}</td>
+            <td>${created}</td>
           </tr>
-        \`;
+        `;
             })
             .join('')
-        : \`
+        : `
         <tr><td colspan="9" class="muted">No clients yet for this user.</td></tr>
-      \`;
+      `;
 
-    res.send(\`
+    res.send(`
       <!DOCTYPE html>
       <html lang="en">
       <head>
@@ -1476,7 +1528,7 @@ app.get('/panel', requireAuth, (req, res) => {
           <div>
             <h1>Universal Tracking Workspace</h1>
             <div class="user">
-              Logged in as: <strong>\${user.email}</strong>
+              Logged in as: <strong>${user.email}</strong>
             </div>
           </div>
           <div>
@@ -1488,7 +1540,7 @@ app.get('/panel', requireAuth, (req, res) => {
         <div class="card">
           <h2 style="font-size: 15px; margin: 0 0 6px 0;">Your clients</h2>
           <div class="muted">Use these keys in landing pages / bots for each client.</div>
-          \${errorHtml}
+          ${errorHtml}
 
           <form method="POST" action="/panel/new-client" class="new-client">
             <div class="new-client-row">
@@ -1534,13 +1586,13 @@ app.get('/panel', requireAuth, (req, res) => {
               </tr>
             </thead>
             <tbody>
-              \${rowsHtml}
+              ${rowsHtml}
             </tbody>
           </table>
         </div>
       </body>
       </html>
-    \`);
+    `);
   } catch (err) {
     console.error('❌ Error in GET /panel:', err);
     res.status(500).send('Internal error');
@@ -1574,7 +1626,7 @@ app.post('/panel/new-client', requireAuth, (req, res) => {
         .replace(/[^a-z0-9-]/g, '')
         .slice(0, 32);
       if (!slug) {
-        slug = \`client-\${Date.now()}\`;
+        slug = `client-${Date.now()}`;
       }
     }
 
@@ -1584,7 +1636,7 @@ app.post('/panel/new-client', requireAuth, (req, res) => {
       .get(user.id, slug);
 
     if (existing) {
-      slug = \`\${slug}-\${Math.random().toString(36).slice(2, 5)}\`;
+      slug = `${slug}-${Math.random().toString(36).slice(2, 5)}`;
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -1592,7 +1644,7 @@ app.post('/panel/new-client', requireAuth, (req, res) => {
     const publicKey = generateKey('PUB');
     const secretKey = generateKey('SEC');
 
-    db.prepare(\`
+    db.prepare(`
       INSERT INTO clients (
         name,
         slug,
@@ -1607,7 +1659,7 @@ app.post('/panel/new-client', requireAuth, (req, res) => {
         created_at
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    \`).run(
+    `).run(
       name,
       slug,
       user.id,
@@ -1627,6 +1679,7 @@ app.post('/panel/new-client', requireAuth, (req, res) => {
     return res.redirect('/panel?error=generic');
   }
 });
+
 // ----- DEV: Seed admin + client + keys (one-time helper) -----
 app.get('/dev/seed-admin', async (req, res) => {
   try {
