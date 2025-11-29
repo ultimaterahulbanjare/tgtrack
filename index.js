@@ -7,20 +7,17 @@ const crypto = require('crypto');
 const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
 const bcrypt = require('bcryptjs');
-const cookieParser = require('cookie-parser');
 
 const app = express();
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
 
 // 🔹 CORS allow for LP → backend calls
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*'); // chahe to yaha Netlify domain daal sakte ho
-  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header("Access-Control-Allow-Origin", "*"); // chahe to yaha Netlify domain daal sakte ho
+  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
 
@@ -88,53 +85,6 @@ function parseUserAgent(uaRaw) {
   else if (ua.includes('linux')) os = 'Linux';
 
   return { deviceType, browser, os };
-}
-
-// ----- Auth helpers (simple HMAC token in cookie) -----
-const SESSION_SECRET = process.env.SESSION_SECRET || 'change_me_please';
-
-// Token format: "userId.signature"
-function signAuthToken(userId) {
-  const payload = String(userId);
-  const sig = crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(payload)
-    .digest('hex');
-  return `${payload}.${sig}`;
-}
-
-function verifyAuthToken(token) {
-  if (!token) return null;
-  const parts = String(token).split('.');
-  if (parts.length !== 2) return null;
-  const [payload, sig] = parts;
-  const expected = crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(payload)
-    .digest('hex');
-  if (sig !== expected) return null;
-
-  const id = parseInt(payload, 10);
-  if (!id || Number.isNaN(id)) return null;
-  return id;
-}
-
-function requireAuth(req, res, next) {
-  const token = req.cookies && req.cookies.auth;
-  const userId = verifyAuthToken(token);
-
-  if (!userId) {
-    return res.redirect('/login');
-  }
-
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  if (!user) {
-    res.clearCookie('auth');
-    return res.redirect('/login');
-  }
-
-  req.user = user;
-  next();
 }
 
 // ----- Pre-lead (fbc/fbp + tracking) DB statements -----
@@ -220,6 +170,11 @@ function generateEventId() {
   return crypto.randomBytes(16).toString('hex');
 }
 
+
+function generateKey(prefix) {
+  const rand = crypto.randomBytes(6).toString('hex');
+  return `${prefix}_${rand}`;
+}
 // ----- Basic health route -----
 app.get('/', (req, res) => {
   res.send('Telegram Funnel Bot running ✅');
@@ -228,7 +183,9 @@ app.get('/', (req, res) => {
 // ----- Debug: last joins -----
 app.get('/debug-joins', (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM joins ORDER BY id DESC LIMIT 20').all();
+    const rows = db
+      .prepare('SELECT * FROM joins ORDER BY id DESC LIMIT 20')
+      .all();
     res.json(rows);
   } catch (err) {
     console.error('❌ Error reading joins:', err.message);
@@ -239,7 +196,9 @@ app.get('/debug-joins', (req, res) => {
 // ----- Debug: channels table -----
 app.get('/debug-channels', (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM channels ORDER BY id DESC LIMIT 20').all();
+    const rows = db
+      .prepare('SELECT * FROM channels ORDER BY id DESC LIMIT 20')
+      .all();
     res.json(rows);
   } catch (err) {
     console.error('❌ Error reading channels:', err.message);
@@ -247,7 +206,9 @@ app.get('/debug-channels', (req, res) => {
   }
 });
 
-// ----- SaaS-style pageview tracking (multi-client via public_key) -----
+// ----- NEW: SaaS-style pageview tracking (multi-client via public_key) -----
+// Yaha sirf gating ho rahi hai public_key se.
+// Insert same hai jo /pre-lead use karta hai → DB error nahi aayega.
 app.post('/api/v1/track/pageview', (req, res) => {
   try {
     const {
@@ -285,8 +246,8 @@ app.post('/api/v1/track/pageview', (req, res) => {
     const userAgent = req.headers['user-agent'] || null;
     const { deviceType, browser, os } = parseUserAgent(userAgent);
 
-    // Insert same as /pre-lead
-    const info = insertPreLeadStmt.run(
+    // Insert exactly like /pre-lead (without client_id)
+    insertPreLeadStmt.run(
       String(channel_id),
       fbc || null,
       fbp || null,
@@ -304,19 +265,6 @@ app.post('/api/v1/track/pageview', (req, res) => {
       utm_term || null,
       now
     );
-
-    // Attach client_id to this pageview pre_lead
-    try {
-      db.prepare('UPDATE pre_leads SET client_id = ? WHERE id = ?').run(
-        client.id,
-        info.lastInsertRowid
-      );
-    } catch (e) {
-      console.error(
-        '⚠️ Failed to attach client_id to pageview pre_lead:',
-        e.message || e
-      );
-    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -353,7 +301,7 @@ app.post('/pre-lead', (req, res) => {
     const userAgent = req.headers['user-agent'] || null;
     const { deviceType, browser, os } = parseUserAgent(userAgent);
 
-    const info = insertPreLeadStmt.run(
+    insertPreLeadStmt.run(
       String(channel_id),
       fbc || null,
       fbp || null,
@@ -371,26 +319,6 @@ app.post('/pre-lead', (req, res) => {
       utm_term || null,
       now
     );
-
-    // Attach correct client_id using channels table (fallback client_id = 1)
-    try {
-      const channelRow = db
-        .prepare('SELECT client_id FROM channels WHERE telegram_chat_id = ?')
-        .get(String(channel_id));
-
-      const clientIdForPreLead =
-        channelRow && channelRow.client_id ? channelRow.client_id : 1;
-
-      db.prepare('UPDATE pre_leads SET client_id = ? WHERE id = ?').run(
-        clientIdForPreLead,
-        info.lastInsertRowid
-      );
-    } catch (e) {
-      console.error(
-        '⚠️ Failed to attach client_id to CTR pre_lead:',
-        e.message || e
-      );
-    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -516,10 +444,9 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
   } else {
     // Optionally: agar title change ho gaya ho to update
     if (chat.title && chat.title !== channel.telegram_title) {
-      db.prepare('UPDATE channels SET telegram_title = ? WHERE id = ?').run(
-        chat.title,
-        channel.id
-      );
+      db.prepare(
+        'UPDATE channels SET telegram_title = ? WHERE id = ?'
+      ).run(chat.title, channel.id);
       channel.telegram_title = chat.title;
     }
   }
@@ -595,7 +522,10 @@ async function sendMetaLeadEvent(user, joinRequest) {
   });
 
   // Channel config (pixel, LP, client)
-  const channelConfig = getOrCreateChannelConfigFromJoin(joinRequest, eventTime);
+  const channelConfig = getOrCreateChannelConfigFromJoin(
+    joinRequest,
+    eventTime
+  );
 
   const pixelId = channelConfig.pixel_id || DEFAULT_META_PIXEL_ID;
   const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
@@ -606,7 +536,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
   const eventId = generateEventId();
 
   const userData = {
-    external_id: externalIdHash,
+    external_id: externalIdHash
   };
 
   if (fbcForThisLead) {
@@ -649,7 +579,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
     event_id: eventId,
     event_source_url: lpUrl,
     action_source: 'website',
-    user_data: userData,
+    user_data: userData
   };
 
   if (Object.keys(customData).length > 0) {
@@ -657,13 +587,13 @@ async function sendMetaLeadEvent(user, joinRequest) {
   }
 
   const payload = {
-    data: [eventBody],
+    data: [eventBody]
   };
 
   const res = await axios.post(url, payload);
   console.log('Meta CAPI response:', res.data);
 
-  // ✅ Joins table me log karein – client_id bhi store karein
+  // ✅ Joins table me log karein – ID ko insert nahi kar rahe, SQLite auto increment karega
   db.prepare(
     `
     INSERT INTO joins 
@@ -685,10 +615,9 @@ async function sendMetaLeadEvent(user, joinRequest) {
         utm_medium,
         utm_campaign,
         utm_content,
-        utm_term,
-        client_id
+        utm_term
       )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   ).run(
     String(user.id),
@@ -708,8 +637,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
     utmMediumForThisLead || null,
     utmCampaignForThisLead || null,
     utmContentForThisLead || null,
-    utmTermForThisLead || null,
-    channelConfig.client_id || 1
+    utmTermForThisLead || null
   );
 
   console.log('✅ Join stored in DB for user:', user.id);
@@ -779,136 +707,6 @@ app.post('/admin/update-channel', (req, res) => {
     });
   } catch (err) {
     console.error('❌ Error in /admin/update-channel:', err);
-    res.status(500).json({ ok: false, error: 'Internal error' });
-  }
-});
-
-// ----- CLIENT-SPECIFIC JSON Stats API: /api/v1/client/stats -----
-// Body example:
-// { "public_key": "PUB_xxx" }  OR  { "secret_key": "SEC_xxx" }
-app.post('/api/v1/client/stats', (req, res) => {
-  try {
-    const { public_key, secret_key } = req.body || {};
-
-    if (!public_key && !secret_key) {
-      return res.status(400).json({
-        ok: false,
-        error: 'public_key or secret_key required',
-      });
-    }
-
-    let client = null;
-    if (public_key) {
-      client = db
-        .prepare('SELECT * FROM clients WHERE public_key = ?')
-        .get(String(public_key));
-    } else if (secret_key) {
-      client = db
-        .prepare('SELECT * FROM clients WHERE secret_key = ?')
-        .get(String(secret_key));
-    }
-
-    if (!client) {
-      return res.status(404).json({
-        ok: false,
-        error: 'client_not_found',
-      });
-    }
-
-    const clientId = client.id;
-
-    // Total joins for this client
-    const totalRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ?')
-      .get(clientId);
-    const totalJoins = totalRow.cnt || 0;
-
-    // Today joins
-    const now = Math.floor(Date.now() / 1000);
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
-
-    const todayRow = db
-      .prepare(
-        'SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ? AND client_id = ?'
-      )
-      .get(startOfDayTs, now, clientId);
-    const todayJoins = todayRow.cnt || 0;
-
-    // Last 7 days breakdown
-    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
-    const rows7 = db
-      .prepare(
-        'SELECT joined_at FROM joins WHERE joined_at >= ? AND client_id = ? ORDER BY joined_at ASC'
-      )
-      .all(sevenDaysAgoTs, clientId);
-
-    const byDateMap = {};
-    for (const r of rows7) {
-      const dateKey = formatDateYYYYMMDD(r.joined_at);
-      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
-    }
-
-    const last7Days = Object.keys(byDateMap)
-      .sort()
-      .map((date) => ({ date, count: byDateMap[date] }));
-
-    // By channel for this client
-    const channels = db
-      .prepare(
-        `
-        SELECT 
-          channel_id,
-          channel_title,
-          COUNT(*) AS total
-        FROM joins
-        WHERE client_id = ?
-        GROUP BY channel_id, channel_title
-        ORDER BY total DESC
-      `
-      )
-      .all(clientId);
-
-    // Recent joins with tracking (for UI)
-    const recentJoins = db
-      .prepare(
-        `
-        SELECT
-          telegram_username,
-          channel_title,
-          channel_id,
-          joined_at,
-          ip,
-          country,
-          device_type,
-          browser,
-          os,
-          source,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term
-        FROM joins
-        WHERE client_id = ?
-        ORDER BY joined_at DESC
-        LIMIT 50
-      `
-      )
-      .all(clientId);
-
-    res.json({
-      ok: true,
-      client_id: clientId,
-      total_joins: totalJoins,
-      today_joins: todayJoins,
-      last_7_days: last7Days,
-      by_channel: channels,
-      recent_joins: recentJoins,
-    });
-  } catch (err) {
-    console.error('❌ Error in /api/v1/client/stats:', err);
     res.status(500).json({ ok: false, error: 'Internal error' });
   }
 });
@@ -1270,10 +1068,7 @@ app.get('/dashboard', (req, res) => {
                     ? `<tr><td colspan="14" class="muted">No joins yet</td></tr>`
                     : recentJoins
                         .map((j) => {
-                          const dt = new Date(j.joined_at * 1000)
-                            .toISOString()
-                            .replace('T', ' ')
-                            .substring(0, 19);
+                          const dt = new Date(j.joined_at * 1000).toISOString().replace('T',' ').substring(0,19);
                           return `
                   <tr>
                     <td class="nowrap">${dt}</td>
@@ -1310,6 +1105,7 @@ app.get('/dashboard', (req, res) => {
     res.status(500).send('Internal error');
   }
 });
+
 
 // ---------- LOGIN + LOGOUT + PANEL (SaaS UI) ----------
 
@@ -1456,7 +1252,7 @@ app.post('/login', async (req, res) => {
     const token = signAuthToken(user.id);
     res.cookie('auth', token, {
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: 'lax'
       // secure: true // HTTPS pe on karna
     });
 
@@ -1473,13 +1269,21 @@ app.get('/logout', (req, res) => {
   res.redirect('/login');
 });
 
-// GET /panel - multi-client panel
+// GET /panel - multi-client panel + "Add client" UI
 app.get('/panel', requireAuth, (req, res) => {
   try {
     const user = req.user;
 
+    const errorCode = req.query.error || '';
+    let errorHtml = '';
+    if (errorCode === 'noname') {
+      errorHtml = '<div class="error">Client name is required.</div>';
+    } else if (errorCode === 'generic') {
+      errorHtml = '<div class="error">Could not create client. Please try again.</div>';
+    }
+
     const clients = db
-      .prepare(`
+      .prepare(\`
         SELECT
           id,
           name,
@@ -1493,7 +1297,7 @@ app.get('/panel', requireAuth, (req, res) => {
         FROM clients
         WHERE owner_user_id = ?
         ORDER BY id ASC
-      `)
+      \`)
       .all(user.id);
 
     const clientStats = clients.map((c) => {
@@ -1502,7 +1306,7 @@ app.get('/panel', requireAuth, (req, res) => {
         .get(c.id);
       return {
         client_id: c.id,
-        total_joins: row.cnt || 0,
+        total_joins: row.cnt || 0
       };
     });
 
@@ -1512,34 +1316,35 @@ app.get('/panel', requireAuth, (req, res) => {
     });
 
     const rowsHtml =
-      clients
-        .map((c) => {
-          const totalJoins = statsByClientId[c.id] || 0;
-          const status = c.is_active ? 'Active' : 'Inactive';
-          const created = c.created_at
-            ? new Date(c.created_at * 1000).toISOString().substring(0, 10)
-            : '';
+      clients.length > 0
+        ? clients
+            .map((c) => {
+              const totalJoins = statsByClientId[c.id] || 0;
+              const status = c.is_active ? 'Active' : 'Inactive';
+              const created = c.created_at
+                ? new Date(c.created_at * 1000).toISOString().substring(0, 10)
+                : '';
 
-          return `
+              return \`
           <tr>
-            <td>${c.name || '(no name)'}</td>
-            <td>${c.slug || ''}</td>
-            <td><code>${c.public_key || ''}</code></td>
-            <td><code>${c.secret_key || ''}</code></td>
-            <td>${c.plan || ''}</td>
-            <td>${c.max_channels || ''}</td>
-            <td>${status}</td>
-            <td>${totalJoins}</td>
-            <td>${created}</td>
+            <td>\${c.name || '(no name)'}</td>
+            <td>\${c.slug || ''}</td>
+            <td><code>\${c.public_key || ''}</code></td>
+            <td><code>\${c.secret_key || ''}</code></td>
+            <td>\${c.plan || ''}</td>
+            <td>\${c.max_channels || ''}</td>
+            <td>\${status}</td>
+            <td>\${totalJoins}</td>
+            <td>\${created}</td>
           </tr>
-        `;
-        })
-        .join('') ||
-      `
+        \`;
+            })
+            .join('')
+        : \`
         <tr><td colspan="9" class="muted">No clients yet for this user.</td></tr>
-      `;
+      \`;
 
-    res.send(`
+    res.send(\`
       <!DOCTYPE html>
       <html lang="en">
       <head>
@@ -1606,10 +1411,62 @@ app.get('/panel', requireAuth, (req, res) => {
             color: #6b7280;
             font-size: 12px;
           }
+          .error {
+            margin-top: 8px;
+            margin-bottom: 4px;
+            font-size: 12px;
+            color: #f97373;
+          }
+          .new-client {
+            margin-top: 12px;
+            margin-bottom: 10px;
+          }
+          .new-client-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: flex-end;
+          }
+          .field {
+            display: flex;
+            flex-direction: column;
+            font-size: 12px;
+          }
+          .field label {
+            margin-bottom: 4px;
+            color: #9ca3af;
+          }
+          .field input,
+          .field select {
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid #1f2937;
+            background: #020617;
+            color: #e5e7eb;
+            font-size: 12px;
+            min-width: 120px;
+          }
+          .field.small input {
+            max-width: 90px;
+          }
+          .new-client button {
+            padding: 8px 14px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: #022c22;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 12px;
+          }
           @media (max-width: 900px) {
             table {
               display: block;
               overflow-x: auto;
+            }
+            .new-client-row {
+              flex-direction: column;
+              align-items: stretch;
             }
           }
         </style>
@@ -1619,7 +1476,7 @@ app.get('/panel', requireAuth, (req, res) => {
           <div>
             <h1>Universal Tracking Workspace</h1>
             <div class="user">
-              Logged in as: <strong>${user.email}</strong>
+              Logged in as: <strong>\${user.email}</strong>
             </div>
           </div>
           <div>
@@ -1631,6 +1488,36 @@ app.get('/panel', requireAuth, (req, res) => {
         <div class="card">
           <h2 style="font-size: 15px; margin: 0 0 6px 0;">Your clients</h2>
           <div class="muted">Use these keys in landing pages / bots for each client.</div>
+          \${errorHtml}
+
+          <form method="POST" action="/panel/new-client" class="new-client">
+            <div class="new-client-row">
+              <div class="field">
+                <label for="name">Client name</label>
+                <input id="name" name="name" type="text" required placeholder="e.g. VeerBhai Agency" />
+              </div>
+              <div class="field">
+                <label for="slug">Slug (optional)</label>
+                <input id="slug" name="slug" type="text" placeholder="veerbhai-agency" />
+              </div>
+              <div class="field">
+                <label for="plan">Plan</label>
+                <select id="plan" name="plan">
+                  <option value="starter" selected>starter</option>
+                  <option value="pro">pro</option>
+                  <option value="agency">agency</option>
+                </select>
+              </div>
+              <div class="field small">
+                <label for="max_channels">Max channels</label>
+                <input id="max_channels" name="max_channels" type="number" min="1" value="3" />
+              </div>
+              <div class="field">
+                <label>&nbsp;</label>
+                <button type="submit">+ Add client</button>
+              </div>
+            </div>
+          </form>
 
           <table>
             <thead>
@@ -1647,19 +1534,99 @@ app.get('/panel', requireAuth, (req, res) => {
               </tr>
             </thead>
             <tbody>
-              ${rowsHtml}
+              \${rowsHtml}
             </tbody>
           </table>
         </div>
       </body>
       </html>
-    `);
+    \`);
   } catch (err) {
     console.error('❌ Error in GET /panel:', err);
     res.status(500).send('Internal error');
   }
 });
 
+// POST /panel/new-client - create a new client for logged-in user
+app.post('/panel/new-client', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    let { name, slug, plan, max_channels } = req.body || {};
+
+    name = (name || '').trim();
+    slug = (slug || '').trim().toLowerCase();
+    plan = (plan || '').trim().toLowerCase() || 'starter';
+
+    let maxChannels = parseInt(max_channels, 10);
+    if (!maxChannels || maxChannels < 1) {
+      maxChannels = 3;
+    }
+
+    if (!name) {
+      return res.redirect('/panel?error=noname');
+    }
+
+    // Auto-generate slug if empty
+    if (!slug) {
+      slug = name
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+        .slice(0, 32);
+      if (!slug) {
+        slug = \`client-\${Date.now()}\`;
+      }
+    }
+
+    // Ensure (owner_user_id, slug) roughly unique
+    const existing = db
+      .prepare('SELECT id FROM clients WHERE owner_user_id = ? AND slug = ?')
+      .get(user.id, slug);
+
+    if (existing) {
+      slug = \`\${slug}-\${Math.random().toString(36).slice(2, 5)}\`;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    const publicKey = generateKey('PUB');
+    const secretKey = generateKey('SEC');
+
+    db.prepare(\`
+      INSERT INTO clients (
+        name,
+        slug,
+        owner_user_id,
+        public_key,
+        secret_key,
+        default_pixel_id,
+        default_meta_token,
+        plan,
+        max_channels,
+        is_active,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    \`).run(
+      name,
+      slug,
+      user.id,
+      publicKey,
+      secretKey,
+      process.env.META_PIXEL_ID || null,
+      process.env.META_ACCESS_TOKEN || null,
+      plan,
+      maxChannels,
+      1,
+      now
+    );
+
+    return res.redirect('/panel');
+  } catch (err) {
+    console.error('❌ Error in POST /panel/new-client:', err);
+    return res.redirect('/panel?error=generic');
+  }
+});
 // ----- DEV: Seed admin + client + keys (one-time helper) -----
 app.get('/dev/seed-admin', async (req, res) => {
   try {
@@ -1669,22 +1636,22 @@ app.get('/dev/seed-admin', async (req, res) => {
     }
 
     // 1) Check if any admin user already exists
-    const existingAdmin = db
-      .prepare('SELECT * FROM users WHERE role = ? LIMIT 1')
-      .get('admin');
+    const existingAdmin = db.prepare(
+      'SELECT * FROM users WHERE role = ? LIMIT 1'
+    ).get('admin');
 
     if (existingAdmin) {
       return res.json({
         ok: true,
         message: 'Admin already exists, nothing to do.',
-        admin_email: existingAdmin.email,
+        admin_email: existingAdmin.email
       });
     }
 
     const now = Math.floor(Date.now() / 1000);
 
-    const email = 'admin@uts.local'; // dev ke liye, baad me change kar dena
-    const password = 'Admin@123'; // dev ke liye, UI banne ke baad reset karna
+    const email = 'admin@uts.local';   // dev ke liye, baad me change kar dena
+    const password = 'Admin@123';      // dev ke liye, UI banne ke baad reset karna
 
     const password_hash = await bcrypt.hash(password, 10);
 
@@ -1738,12 +1705,12 @@ app.get('/dev/seed-admin', async (req, res) => {
       message: 'Admin + client + keys created ✅ (one-time)',
       admin_login: {
         email,
-        password,
+        password
       },
       tracking_keys: {
         public_key: publicKey,
-        secret_key: secretKey,
-      },
+        secret_key: secretKey
+      }
     });
   } catch (err) {
     console.error('❌ Error in /dev/seed-admin:', err);
