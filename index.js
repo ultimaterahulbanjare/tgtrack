@@ -1354,7 +1354,12 @@ app.get('/panel', requireAuth, (req, res) => {
 
     const clientStats = clients.map((c) => {
       const row = db
-        .prepare('SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ?')
+        .prepare(`
+          SELECT COUNT(*) AS cnt
+          FROM joins j
+          JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+          WHERE ch.client_id = ?
+        `)
         .get(c.id);
       return {
         client_id: c.id,
@@ -1687,7 +1692,7 @@ app.post('/panel/new-client', requireAuth, (req, res) => {
 });
 
 
-// GET /panel/client/:id - per-client mini dashboard
+// GET /panel/client/:id - per-client mini dashboard + channels UI
 app.get('/panel/client/:id', requireAuth, (req, res) => {
   try {
     const user = req.user;
@@ -1710,16 +1715,28 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     startOfDay.setHours(0, 0, 0, 0);
     const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
 
-    // Total joins for this client
+    // Total joins for this client (via channels mapping)
     const totalRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ?')
+      .prepare(`
+        SELECT COUNT(*) AS cnt
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+      `)
       .get(clientId);
     const totalJoins = totalRow.cnt || 0;
 
     // Today joins for this client
     const todayRow = db
       .prepare(
-        'SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ? AND joined_at >= ? AND joined_at <= ?'
+        `
+        SELECT COUNT(*) AS cnt
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+          AND j.joined_at >= ?
+          AND j.joined_at <= ?
+      `
       )
       .get(clientId, startOfDayTs, now);
     const todayJoins = todayRow.cnt || 0;
@@ -1728,7 +1745,14 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
     const rows7 = db
       .prepare(
-        'SELECT joined_at FROM joins WHERE client_id = ? AND joined_at >= ? ORDER BY joined_at ASC'
+        `
+        SELECT j.joined_at
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+          AND j.joined_at >= ?
+        ORDER BY j.joined_at ASC
+      `
       )
       .all(clientId, sevenDaysAgoTs);
 
@@ -1741,18 +1765,44 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       .sort()
       .map((date) => ({ date, count: byDateMap[date] }));
 
-    // By channel
-    const channels = db
+    // By channel stats (from joins)
+    const byChannelStats = db
       .prepare(
         `
-        SELECT 
-          channel_id,
-          channel_title,
+        SELECT
+          ch.telegram_chat_id AS channel_id,
+          ch.telegram_title AS channel_title,
           COUNT(*) AS total
-        FROM joins
-        WHERE client_id = ?
-        GROUP BY channel_id, channel_title
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+        GROUP BY ch.telegram_chat_id, ch.telegram_title
         ORDER BY total DESC
+      `
+      )
+      .all(clientId);
+
+    const channelTotalsMap = {};
+    for (const row of byChannelStats) {
+      channelTotalsMap[String(row.channel_id)] = row.total;
+    }
+
+    // Channel configs for this client
+    const channelConfigs = db
+      .prepare(
+        `
+        SELECT
+          id,
+          telegram_chat_id,
+          telegram_title,
+          deep_link,
+          pixel_id,
+          lp_url,
+          is_active,
+          created_at
+        FROM channels
+        WHERE client_id = ?
+        ORDER BY created_at DESC, id DESC
       `
       )
       .all(clientId);
@@ -1762,24 +1812,25 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       .prepare(
         `
         SELECT
-          telegram_username,
-          channel_title,
-          channel_id,
-          joined_at,
-          ip,
-          country,
-          device_type,
-          browser,
-          os,
-          source,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term
-        FROM joins
-        WHERE client_id = ?
-        ORDER BY joined_at DESC
+          j.telegram_username,
+          j.channel_title,
+          j.channel_id,
+          j.joined_at,
+          j.ip,
+          j.country,
+          j.device_type,
+          j.browser,
+          j.os,
+          j.source,
+          j.utm_source,
+          j.utm_medium,
+          j.utm_campaign,
+          j.utm_content,
+          j.utm_term
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+        ORDER BY j.joined_at DESC
         LIMIT 50
       `
       )
@@ -1862,10 +1913,53 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             border-radius: 4px;
             font-size: 11px;
           }
+          .section-title {
+            font-size: 15px;
+            margin: 16px 0 4px 0;
+          }
+          .channels-form-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: flex-end;
+            margin-bottom: 10px;
+          }
+          .field {
+            display: flex;
+            flex-direction: column;
+            font-size: 12px;
+          }
+          .field label {
+            margin-bottom: 4px;
+            color: #9ca3af;
+          }
+          .field input {
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid #1f2937;
+            background: #020617;
+            color: #e5e7eb;
+            font-size: 12px;
+            min-width: 120px;
+          }
+          .btn {
+            padding: 8px 14px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: #022c22;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 12px;
+          }
           @media (max-width: 900px) {
             table {
               display: block;
               overflow-x: auto;
+            }
+            .channels-form-row {
+              flex-direction: column;
+              align-items: stretch;
             }
           }
         </style>
@@ -1895,7 +1989,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           </div>
         </div>
 
-        <h2 style="font-size:15px;margin:10px 0 4px 0;">Last 7 days</h2>
+        <h2 class="section-title">Last 7 days</h2>
         <table>
           <thead>
             <tr>
@@ -1920,7 +2014,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           </tbody>
         </table>
 
-        <h2 style="font-size:15px;margin:16px 0 4px 0;">By channel</h2>
+        <h2 class="section-title">By channel</h2>
         <table>
           <thead>
             <tr>
@@ -1931,9 +2025,9 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           </thead>
           <tbody>
             ${
-              channels.length === 0
+              byChannelStats.length === 0
                 ? `<tr><td colspan="3" class="muted">No channels yet</td></tr>`
-                : channels
+                : byChannelStats
                     .map(
                       (c) => `
               <tr>
@@ -1947,7 +2041,78 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           </tbody>
         </table>
 
-        <h2 style="font-size:15px;margin:16px 0 4px 0;">Recent joins</h2>
+        <h2 class="section-title">Manage channels</h2>
+        <form method="POST" action="/panel/client/${clientId}/channels/new">
+          <div class="channels-form-row">
+            <div class="field">
+              <label for="telegram_title">Channel title</label>
+              <input id="telegram_title" name="telegram_title" type="text" placeholder="My Telegram Channel" />
+            </div>
+            <div class="field">
+              <label for="telegram_chat_id">Channel ID (chat_id)</label>
+              <input id="telegram_chat_id" name="telegram_chat_id" type="text" required placeholder="-1001234567890" />
+            </div>
+            <div class="field">
+              <label for="deep_link">Deep link (invite link)</label>
+              <input id="deep_link" name="deep_link" type="text" placeholder="https://t.me/+xxxx" />
+            </div>
+            <div class="field">
+              <label for="pixel_id">Pixel ID (optional)</label>
+              <input id="pixel_id" name="pixel_id" type="text" placeholder="Use client/default if empty" />
+            </div>
+            <div class="field">
+              <label for="lp_url">Landing page URL (optional)</label>
+              <input id="lp_url" name="lp_url" type="text" placeholder="https://..." />
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button type="submit" class="btn">Save channel</button>
+            </div>
+          </div>
+        </form>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Channel ID</th>
+              <th>Deep link</th>
+              <th>Pixel ID</th>
+              <th>LP URL</th>
+              <th>Status</th>
+              <th>Total joins</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              channelConfigs.length === 0
+                ? `<tr><td colspan="8" class="muted">No channel config yet</td></tr>`
+                : channelConfigs
+                    .map((ch) => {
+                      const created = ch.created_at
+                        ? new Date(ch.created_at * 1000).toISOString().substring(0, 10)
+                        : '';
+                      const status = ch.is_active ? 'Active' : 'Inactive';
+                      const tot = channelTotalsMap[String(ch.telegram_chat_id)] || 0;
+                      return `
+              <tr>
+                <td>${ch.telegram_title || '(no title)'}</td>
+                <td>${ch.telegram_chat_id}</td>
+                <td>${ch.deep_link || ''}</td>
+                <td>${ch.pixel_id || ''}</td>
+                <td>${ch.lp_url || ''}</td>
+                <td>${status}</td>
+                <td>${tot}</td>
+                <td>${created}</td>
+              </tr>`;
+                    })
+                    .join('')
+            }
+          </tbody>
+        </table>
+
+        <h2 class="section-title">Recent joins</h2>
         <table>
           <thead>
             <tr>
@@ -2003,6 +2168,87 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     res.status(500).send('Internal error');
   }
 });
+
+
+// POST /panel/client/:id/channels/new - create or update channel for this client
+app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    const clientId = parseInt(req.params.id, 10);
+    if (!clientId || Number.isNaN(clientId)) {
+      return res.status(400).send('Invalid client id');
+    }
+
+    const client = db
+      .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
+      .get(clientId, user.id);
+    if (!client) {
+      return res.status(404).send('Client not found');
+    }
+
+    let { telegram_chat_id, telegram_title, deep_link, pixel_id, lp_url } = req.body || {};
+    telegram_chat_id = (telegram_chat_id || '').trim();
+    telegram_title = (telegram_title || '').trim();
+    deep_link = (deep_link || '').trim();
+    pixel_id = (pixel_id || '').trim();
+    lp_url = (lp_url || '').trim();
+
+    if (!telegram_chat_id) {
+      return res.status(400).send('telegram_chat_id is required');
+    }
+
+    const nowTs = Math.floor(Date.now() / 1000);
+    const existing = db
+      .prepare('SELECT * FROM channels WHERE telegram_chat_id = ?')
+      .get(String(telegram_chat_id));
+
+    if (existing) {
+      db.prepare(
+        `
+        UPDATE channels
+        SET telegram_title = ?, deep_link = ?, pixel_id = ?, lp_url = ?, client_id = ?, is_active = 1
+        WHERE id = ?
+      `
+      ).run(
+        telegram_title || existing.telegram_title,
+        deep_link || existing.deep_link,
+        pixel_id || existing.pixel_id,
+        lp_url || existing.lp_url,
+        clientId,
+        existing.id
+      );
+    } else {
+      db.prepare(
+        `
+        INSERT INTO channels (
+          client_id,
+          telegram_chat_id,
+          telegram_title,
+          deep_link,
+          pixel_id,
+          lp_url,
+          created_at,
+          is_active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+      `
+      ).run(
+        clientId,
+        String(telegram_chat_id),
+        telegram_title || null,
+        deep_link || null,
+        pixel_id || DEFAULT_META_PIXEL_ID,
+        lp_url || DEFAULT_PUBLIC_LP_URL,
+        nowTs
+      );
+    }
+
+    return res.redirect('/panel/client/' + clientId);
+  } catch (err) {
+    console.error('❌ Error in POST /panel/client/:id/channels/new:', err);
+    return res.status(500).send('Internal error');
+  }
+});
+
 // ----- DEV: Seed admin + client + keys (one-time helper) -----
 app.get('/dev/seed-admin', async (req, res) => {
   try {
