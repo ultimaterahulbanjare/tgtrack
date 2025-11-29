@@ -1388,6 +1388,11 @@ app.get('/panel', requireAuth, (req, res) => {
             <td>${status}</td>
             <td>${totalJoins}</td>
             <td>${created}</td>
+            <td>
+              <a href="/panel/client/${c.id}" style="color:#38bdf8;font-size:12px;text-decoration:none;">
+                View
+              </a>
+            </td>
           </tr>
         `;
             })
@@ -1583,6 +1588,7 @@ app.get('/panel', requireAuth, (req, res) => {
                 <th>Status</th>
                 <th>Total joins</th>
                 <th>Created</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1680,6 +1686,323 @@ app.post('/panel/new-client', requireAuth, (req, res) => {
   }
 });
 
+
+// GET /panel/client/:id - per-client mini dashboard
+app.get('/panel/client/:id', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    const clientId = parseInt(req.params.id, 10);
+    if (!clientId || Number.isNaN(clientId)) {
+      return res.status(400).send('Invalid client id');
+    }
+
+    // Ensure client belongs to this user
+    const client = db
+      .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
+      .get(clientId, user.id);
+
+    if (!client) {
+      return res.status(404).send('Client not found');
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
+
+    // Total joins for this client
+    const totalRow = db
+      .prepare('SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ?')
+      .get(clientId);
+    const totalJoins = totalRow.cnt || 0;
+
+    // Today joins for this client
+    const todayRow = db
+      .prepare(
+        'SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ? AND joined_at >= ? AND joined_at <= ?'
+      )
+      .get(clientId, startOfDayTs, now);
+    const todayJoins = todayRow.cnt || 0;
+
+    // Last 7 days breakdown
+    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
+    const rows7 = db
+      .prepare(
+        'SELECT joined_at FROM joins WHERE client_id = ? AND joined_at >= ? ORDER BY joined_at ASC'
+      )
+      .all(clientId, sevenDaysAgoTs);
+
+    const byDateMap = {};
+    for (const r of rows7) {
+      const dateKey = formatDateYYYYMMDD(r.joined_at);
+      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
+    }
+    const last7Days = Object.keys(byDateMap)
+      .sort()
+      .map((date) => ({ date, count: byDateMap[date] }));
+
+    // By channel
+    const channels = db
+      .prepare(
+        `
+        SELECT 
+          channel_id,
+          channel_title,
+          COUNT(*) AS total
+        FROM joins
+        WHERE client_id = ?
+        GROUP BY channel_id, channel_title
+        ORDER BY total DESC
+      `
+      )
+      .all(clientId);
+
+    // Recent joins
+    const recentJoins = db
+      .prepare(
+        `
+        SELECT
+          telegram_username,
+          channel_title,
+          channel_id,
+          joined_at,
+          ip,
+          country,
+          device_type,
+          browser,
+          os,
+          source,
+          utm_source,
+          utm_medium,
+          utm_campaign,
+          utm_content,
+          utm_term
+        FROM joins
+        WHERE client_id = ?
+        ORDER BY joined_at DESC
+        LIMIT 50
+      `
+      )
+      .all(clientId);
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Client Dashboard - ${client.name || ''}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #020617;
+            color: #e5e7eb;
+            padding: 20px;
+            margin: 0;
+          }
+          a {
+            color: #38bdf8;
+            text-decoration: none;
+            font-size: 13px;
+          }
+          .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 18px;
+          }
+          .topbar h1 {
+            font-size: 18px;
+            margin: 0;
+          }
+          .muted {
+            color: #6b7280;
+            font-size: 12px;
+          }
+          .cards {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+          }
+          .card {
+            background: #020617;
+            border-radius: 14px;
+            padding: 12px 14px;
+            border: 1px solid #1f2937;
+            min-width: 150px;
+          }
+          .card h2 {
+            font-size: 13px;
+            color: #9ca3af;
+            margin: 0 0 4px 0;
+          }
+          .card .value {
+            font-size: 20px;
+            font-weight: 600;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+          }
+          th, td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #1f2937;
+            font-size: 12px;
+            white-space: nowrap;
+          }
+          th {
+            text-align: left;
+            color: #9ca3af;
+          }
+          code {
+            background: #111827;
+            padding: 2px 4px;
+            border-radius: 4px;
+            font-size: 11px;
+          }
+          @media (max-width: 900px) {
+            table {
+              display: block;
+              overflow-x: auto;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="topbar">
+          <div>
+            <a href="/panel">&larr; Back to panel</a>
+            <h1 style="margin-top:8px;">${client.name || 'Client'}</h1>
+            <div class="muted">
+              Slug: <code>${client.slug || ''}</code> · Plan: ${client.plan || ''} · Max channels: ${client.max_channels || ''}
+            </div>
+            <div class="muted">
+              Public key: <code>${client.public_key || ''}</code> · Secret key: <code>${client.secret_key || ''}</code>
+            </div>
+          </div>
+        </div>
+
+        <div class="cards">
+          <div class="card">
+            <h2>Total joins</h2>
+            <div class="value">${totalJoins}</div>
+          </div>
+          <div class="card">
+            <h2>Today joins</h2>
+            <div class="value">${todayJoins}</div>
+          </div>
+        </div>
+
+        <h2 style="font-size:15px;margin:10px 0 4px 0;">Last 7 days</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Joins</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              last7Days.length === 0
+                ? `<tr><td colspan="2" class="muted">No data yet</td></tr>`
+                : last7Days
+                    .map(
+                      (d) => `
+              <tr>
+                <td>${d.date}</td>
+                <td>${d.count}</td>
+              </tr>`
+                    )
+                    .join('')
+            }
+          </tbody>
+        </table>
+
+        <h2 style="font-size:15px;margin:16px 0 4px 0;">By channel</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Channel title</th>
+              <th>Channel ID</th>
+              <th>Total joins</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              channels.length === 0
+                ? `<tr><td colspan="3" class="muted">No channels yet</td></tr>`
+                : channels
+                    .map(
+                      (c) => `
+              <tr>
+                <td>${c.channel_title || '(no title)'}</td>
+                <td>${c.channel_id}</td>
+                <td>${c.total}</td>
+              </tr>`
+                    )
+                    .join('')
+            }
+          </tbody>
+        </table>
+
+        <h2 style="font-size:15px;margin:16px 0 4px 0;">Recent joins</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Username</th>
+              <th>Channel</th>
+              <th>IP</th>
+              <th>Country</th>
+              <th>Device</th>
+              <th>Browser</th>
+              <th>OS</th>
+              <th>Source</th>
+              <th>UTM Source</th>
+              <th>UTM Medium</th>
+              <th>UTM Campaign</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              recentJoins.length === 0
+                ? `<tr><td colspan="12" class="muted">No joins yet</td></tr>`
+                : recentJoins
+                    .map((j) => {
+                      const dt = new Date(j.joined_at * 1000)
+                        .toISOString()
+                        .replace('T', ' ')
+                        .substring(0, 19);
+                      return `
+              <tr>
+                <td>${dt}</td>
+                <td>${j.telegram_username || '(no username)'}</td>
+                <td>${j.channel_title || ''}</td>
+                <td>${j.ip || ''}</td>
+                <td>${j.country || ''}</td>
+                <td>${j.device_type || ''}</td>
+                <td>${j.browser || ''}</td>
+                <td>${j.os || ''}</td>
+                <td>${j.source || ''}</td>
+                <td>${j.utm_source || ''}</td>
+                <td>${j.utm_medium || ''}</td>
+                <td>${j.utm_campaign || ''}</td>
+              </tr>`;
+                    })
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error('❌ Error in GET /panel/client/:id:', err);
+    res.status(500).send('Internal error');
+  }
+});
 // ----- DEV: Seed admin + client + keys (one-time helper) -----
 app.get('/dev/seed-admin', async (req, res) => {
   try {
