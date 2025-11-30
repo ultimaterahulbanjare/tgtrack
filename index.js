@@ -573,7 +573,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
     utmTermForThisLead,
   });
 
-  // Channel config (pixel, LP, client)
+  // Channel config (pixel, LP, client, meta token)
   const channelConfig = getOrCreateChannelConfigFromJoin(
     joinRequest,
     eventTime
@@ -581,8 +581,17 @@ async function sendMetaLeadEvent(user, joinRequest) {
 
   const pixelId = channelConfig.pixel_id || DEFAULT_META_PIXEL_ID;
   const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
+  const metaToken = channelConfig.meta_token || null;
 
-  const url = `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${META_ACCESS_TOKEN}`;
+  if (!metaToken) {
+    console.log(
+      '⚠️ No meta_token configured on channel_id',
+      channelId,
+      '- skipping CAPI Lead event'
+    );
+  } else {
+
+    const url = `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${metaToken}`;
 
   const externalIdHash = hashSha256(String(user.id));
   const eventId = generateEventId();
@@ -644,6 +653,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
 
   const res = await axios.post(url, payload);
   console.log('Meta CAPI response:', res.data);
+  }
 
   // ✅ Joins table me log karein – ID ko insert nahi kar rahe, SQLite auto increment karega
   db.prepare(
@@ -705,6 +715,7 @@ app.post('/admin/update-channel', (req, res) => {
       lp_url,
       client_id,
       deep_link,
+      meta_token,
     } = req.body;
 
     if (admin_key !== ADMIN_KEY) {
@@ -729,13 +740,14 @@ app.post('/admin/update-channel', (req, res) => {
 
     const newPixel = pixel_id || channel.pixel_id;
     const newLp = lp_url || channel.lp_url;
+    const newMetaToken = meta_token || channel.meta_token;
     const newClientId = client_id || channel.client_id;
     const newDeepLink = deep_link || channel.deep_link;
 
     db.prepare(
       `
       UPDATE channels
-      SET pixel_id = ?, lp_url = ?, client_id = ?, deep_link = ?
+      SET pixel_id = ?, lp_url = ?, meta_token = ?, client_id = ?, deep_link = ?
       WHERE telegram_chat_id = ?
     `
     ).run(
@@ -1803,6 +1815,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           deep_link,
           pixel_id,
           lp_url,
+          meta_token,
           is_active,
           created_at
         FROM channels
@@ -2096,6 +2109,10 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <input id="lp_url" name="lp_url" type="text" placeholder="https://..." />
             </div>
             <div class="field">
+              <label for="meta_token">Meta access token (CAPI)</label>
+              <input id="meta_token" name="meta_token" type="text" placeholder="EAAB..." />
+            </div>
+            <div class="field">
               <label>&nbsp;</label>
               <button type="submit" class="btn">Save channel</button>
             </div>
@@ -2109,6 +2126,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <th>Channel ID</th>
               <th>Deep link</th>
               <th>Pixel ID</th>
+              <th>Meta token</th>
               <th>LP URL</th>
               <th>Status</th>
               <th>Total joins</th>
@@ -2217,12 +2235,13 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       return res.status(404).send('Client not found');
     }
 
-    let { telegram_chat_id, telegram_title, deep_link, pixel_id, lp_url } = req.body || {};
+    let { telegram_chat_id, telegram_title, deep_link, pixel_id, lp_url, meta_token } = req.body || {};
     telegram_chat_id = (telegram_chat_id || '').trim();
     telegram_title = (telegram_title || '').trim();
     deep_link = (deep_link || '').trim();
     pixel_id = (pixel_id || '').trim();
     lp_url = (lp_url || '').trim();
+    meta_token = (meta_token || '').trim();
 
     if (!telegram_chat_id) {
       return res.status(400).send('telegram_chat_id is required');
@@ -2237,7 +2256,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       db.prepare(
         `
         UPDATE channels
-        SET telegram_title = ?, deep_link = ?, pixel_id = ?, lp_url = ?, client_id = ?, is_active = 1
+        SET telegram_title = ?, deep_link = ?, pixel_id = ?, lp_url = ?, meta_token = ?, client_id = ?, is_active = 1
         WHERE id = ?
       `
       ).run(
@@ -2245,6 +2264,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         deep_link || existing.deep_link,
         pixel_id || existing.pixel_id,
         lp_url || existing.lp_url,
+        meta_token || existing.meta_token,
         clientId,
         existing.id
       );
@@ -2258,9 +2278,10 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
           deep_link,
           pixel_id,
           lp_url,
+          meta_token,
           created_at,
           is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
       `
       ).run(
         clientId,
@@ -2269,6 +2290,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         deep_link || null,
         pixel_id || DEFAULT_META_PIXEL_ID,
         lp_url || DEFAULT_PUBLIC_LP_URL,
+        meta_token || null,
         nowTs
       );
     }
