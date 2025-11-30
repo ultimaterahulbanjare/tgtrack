@@ -44,6 +44,12 @@ db.exec(`
   );
 `);
 
+// 🔹 channels ke liye ensure karo ke meta_token column hamesha ho
+ensureColumns('channels', [
+  { name: 'meta_token', type: 'TEXT' }
+]);
+
+
 // --- Table: joins log ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS joins (
