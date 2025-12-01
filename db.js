@@ -1,11 +1,9 @@
 const Database = require('better-sqlite3');
 
-// DB file ka naam (ye hi file me sab data store hoga)
+// DB file ka naam
 const db = new Database('telegram_funnel.db');
 
-/**
- * NEW: Users table (login / roles)
- */
+// --- USERS TABLE ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15,16 +13,12 @@ db.exec(`
   );
 `);
 
-/**
- * Clients (tumhara SaaS clients = agencies / businesses)
- */
+// --- CLIENTS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
     slug TEXT,
-    email TEXT,
-    api_key TEXT,
     owner_user_id INTEGER,
     public_key TEXT,
     secret_key TEXT,
@@ -37,9 +31,8 @@ db.exec(`
   );
 `);
 
-/**
- * Channels (har Telegram channel ki config)
- */
+
+// --- CHANNELS (UPDATED WITH meta_token) ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,15 +41,15 @@ db.exec(`
     telegram_title TEXT,
     deep_link TEXT,
     pixel_id TEXT,
+    meta_token TEXT,          -- ⭐ NEW COLUMN
     lp_url TEXT,
     created_at INTEGER,
     is_active INTEGER DEFAULT 1
   );
 `);
 
-/**
- * Joins log
- */
+
+// --- JOINS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS joins (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,13 +75,12 @@ db.exec(`
   );
 `);
 
-/**
- * pre_leads (LP click + tracking)
- */
+
+// --- PRE LEADS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS pre_leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel_id TEXT NOT NULL,
+    channel_id TEXT,
     fbc TEXT,
     fbp TEXT,
     ip TEXT,
@@ -104,95 +96,27 @@ db.exec(`
     utm_content TEXT,
     utm_term TEXT,
     client_id INTEGER,
-    created_at INTEGER
+    ts INTEGER
   );
 `);
 
-// ---------- Auto-migration helper ----------
-function ensureColumns(tableName, columns) {
-  try {
-    const cols = db.prepare(`PRAGMA table_info(${tableName})`).all();
-    const existing = new Set(cols.map((c) => c.name));
 
-    for (const col of columns) {
-      if (!existing.has(col.name)) {
-        const sql = `ALTER TABLE ${tableName} ADD COLUMN ${col.name} ${col.type};`;
-        db.exec(sql);
-        console.log(`✅ Added column ${col.name} to ${tableName}`);
-      }
+// 🔧 AUTO-MIGRATION
+function ensureColumns(table, columns) {
+  const existing = new Set(
+    db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)
+  );
+
+  for (const col of columns) {
+    if (!existing.has(col.name)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col.name} ${col.type};`);
+      console.log(`Added column ${col.name} to ${table}`);
     }
-  } catch (e) {
-    console.log(`ℹ️ ${tableName} migration check error:`, e.message);
   }
 }
 
-/**
- * SaaS upgrade: clients table extra columns
- */
-ensureColumns('clients', [
-  { name: 'slug', type: 'TEXT' },
-  { name: 'owner_user_id', type: 'INTEGER' },
-  { name: 'public_key', type: 'TEXT' },
-  { name: 'secret_key', type: 'TEXT' },
-  { name: 'default_pixel_id', type: 'TEXT' },
-  { name: 'default_meta_token', type: 'TEXT' },
-  { name: 'plan', type: 'TEXT' },
-  { name: 'max_channels', type: 'INTEGER' },
-  { name: 'is_active', type: 'INTEGER' }
+ensureColumns("channels", [
+  { name: "meta_token", type: "TEXT" }
 ]);
-
-// NEW: per-channel CAPI token column
-ensureColumns('channels', [
-  { name: 'meta_token', type: 'TEXT' }
-]);
-
-// pre_leads upgrade
-ensureColumns('pre_leads', [
-  { name: 'fbp', type: 'TEXT' },
-  { name: 'ip', type: 'TEXT' },
-  { name: 'country', type: 'TEXT' },
-  { name: 'user_agent', type: 'TEXT' },
-  { name: 'device_type', type: 'TEXT' },
-  { name: 'browser', type: 'TEXT' },
-  { name: 'os', type: 'TEXT' },
-  { name: 'source', type: 'TEXT' },
-  { name: 'utm_source', type: 'TEXT' },
-  { name: 'utm_medium', type: 'TEXT' },
-  { name: 'utm_campaign', type: 'TEXT' },
-  { name: 'utm_content', type: 'TEXT' },
-  { name: 'utm_term', type: 'TEXT' },
-  { name: 'client_id', type: 'INTEGER' }
-]);
-
-// joins upgrade
-ensureColumns('joins', [
-  { name: 'ip', type: 'TEXT' },
-  { name: 'country', type: 'TEXT' },
-  { name: 'user_agent', type: 'TEXT' },
-  { name: 'device_type', type: 'TEXT' },
-  { name: 'browser', type: 'TEXT' },
-  { name: 'os', type: 'TEXT' },
-  { name: 'source', type: 'TEXT' },
-  { name: 'utm_source', type: 'TEXT' },
-  { name: 'utm_medium', type: 'TEXT' },
-  { name: 'utm_campaign', type: 'TEXT' },
-  { name: 'utm_content', type: 'TEXT' },
-  { name: 'utm_term', type: 'TEXT' },
-  { name: 'client_id', type: 'INTEGER' }
-]);
-
-// Default client ensure
-const defaultClient = db
-  .prepare(`SELECT id FROM clients WHERE id = 1`)
-  .get();
-if (!defaultClient) {
-  const now = Math.floor(Date.now() / 1000);
-  db.prepare(`
-    INSERT INTO clients (id, name, email, api_key, created_at)
-    VALUES (1, 'Default Client', 'default@example.com', 'DEFAULT_KEY', ?)
-  `).run(now);
-
-  console.log('✅ Default client created (id=1)');
-}
 
 module.exports = db;
