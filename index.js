@@ -2,95 +2,148 @@
 require('dotenv').config();
 
 const express = require('express');
+const bodyParser = require('body-parser');
 const axios = require('axios');
 const crypto = require('crypto');
-const db = require('./db'); // SQLite (better-sqlite3) DB connection
-const geoip = require('geoip-lite');
-const bcrypt = require('bcryptjs');
 const cookieParser = require('cookie-parser');
+const useragent = require('express-useragent');
+
+const db = require('./db');
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+
+// Middlewares
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cookieParser());
+app.use(
+  useragent.express()
+);
 
-// 🔹 CORS allow for LP → backend calls
+// Security: basic helmet-like headers (optional lightweight)
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*"); // chahe to yaha Netlify domain daal sakte ho
-  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
-
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
 
-// ----- Helper functions for tracking -----
+// ----- Config from ENV -----
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const DEFAULT_META_PIXEL_ID = process.env.DEFAULT_META_PIXEL_ID || '';
+const DEFAULT_PUBLIC_LP_URL = process.env.DEFAULT_PUBLIC_LP_URL || 'https://example.com';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'DEV_ADMIN_SECRET';
+
+// Session secret
+const SESSION_SECRET = process.env.SESSION_SECRET || 'super_secret_session_key';
+
+// Utility: simple session via signed cookies (minimal)
+const sessions = new Map(); // { sessionId: { userId, role, ... } }
+
+function createSession(res, user) {
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  sessions.set(sessionId, {
+    userId: user.id,
+    role: user.role,
+    email: user.email,
+    createdAt: Date.now()
+  });
+
+  res.cookie('sess_id', sessionId, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: false,
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
+}
+
+function getSession(req) {
+  const sessId = req.cookies?.sess_id;
+  if (!sessId) return null;
+  const sess = sessions.get(sessId);
+  if (!sess) return null;
+  return sess;
+}
+
+function destroySession(req, res) {
+  const sessId = req.cookies?.sess_id;
+  if (sessId) {
+    sessions.delete(sessId);
+  }
+  res.clearCookie('sess_id');
+}
+
+// Helper: password hashing
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+// Helper: random API key
+function generateApiKey() {
+  return 'key_' + crypto.randomBytes(24).toString('hex');
+}
+
+// Helper: slugify
+function slugifyName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9\-]/g, '')
+    .substring(0, 50);
+}
+
+// Helper: SHA256 for Meta external_id
+function hashSha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+// Helper: random event_id
+function generateEventId() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+// Helper: format date (YYYY-MM-DD)
+function formatDateYYYYMMDD(ts) {
+  const d = new Date(ts * 1000);
+  return d.toISOString().substring(0, 10);
+}
+
+// ----- Tracking Helpers -----
+
 // Client IP detect (x-forwarded-for etc.)
 function getClientIp(req) {
-  const xff = req.headers['x-forwarded-for'];
-  if (xff) {
-    return String(xff).split(',')[0].trim();
+  const xfwd = req.headers['x-forwarded-for'];
+  if (xfwd) {
+    const ips = xfwd.split(',').map((s) => s.trim());
+    if (ips[0]) return ips[0];
   }
-  if (req.socket && req.socket.remoteAddress) {
-    return req.socket.remoteAddress;
-  }
-  return null;
+  return req.connection.remoteAddress || req.socket.remoteAddress || null;
 }
 
-// Cloudflare / App Engine headers se country detect
-function getCountryFromHeaders(req) {
-  const cfCountry = req.headers['cf-ipcountry'];
-  if (cfCountry && cfCountry !== 'XX') return String(cfCountry).toUpperCase();
+// Device / browser classification from user-agent
+function classifyDevice(ua) {
+  if (!ua) return { deviceType: null, browser: null, os: null };
+  const info = reqUserAgent(ua);
+  let deviceType = 'desktop';
+  if (info.isMobile) deviceType = 'mobile';
+  else if (info.isTablet) deviceType = 'tablet';
 
-  const gaeCountry = req.headers['x-appengine-country'];
-  if (gaeCountry && gaeCountry !== 'ZZ') return String(gaeCountry).toUpperCase();
-
-  // Fallback to geoip-lite using IP
-  const ip = getClientIp(req);
-  if (!ip) return null;
-
-  const geo = geoip.lookup(ip);
-  if (geo && geo.country) {
-    return geo.country.toUpperCase();
-  }
-
-  return null;
+  return {
+    deviceType,
+    browser: info.browser || null,
+    os: info.os || null
+  };
 }
 
-// Simple user-agent parser (approx, but kaam ka)
-function parseUserAgent(uaRaw) {
-  const ua = (uaRaw || '').toLowerCase();
-
-  let deviceType = 'unknown';
-  if (ua.includes('mobile') || ua.includes('android') || ua.includes('iphone')) {
-    deviceType = 'mobile';
-  } else if (ua.includes('ipad') || ua.includes('tablet')) {
-    deviceType = 'tablet';
-  } else if (ua) {
-    deviceType = 'desktop';
-  }
-
-  let browser = 'unknown';
-  if (ua.includes('edg/')) browser = 'Edge';
-  else if (ua.includes('chrome/')) browser = 'Chrome';
-  else if (ua.includes('safari/') && !ua.includes('chrome/')) browser = 'Safari';
-  else if (ua.includes('firefox/')) browser = 'Firefox';
-  else if (ua.includes('opr/') || ua.includes('opera')) browser = 'Opera';
-
-  let os = 'unknown';
-  if (ua.includes('android')) os = 'Android';
-  else if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ios')) os = 'iOS';
-  else if (ua.includes('windows')) os = 'Windows';
-  else if (ua.includes('mac os') || ua.includes('macintosh')) os = 'macOS';
-  else if (ua.includes('linux')) os = 'Linux';
-
-  return { deviceType, browser, os };
+// Because we imported express-useragent, we can also reuse its parser:
+function reqUserAgent(uaString) {
+  // quick parse using library
+  return useragent.parse(uaString);
 }
 
-// ----- Pre-lead (fbc/fbp + tracking) DB statements -----
+// Prepared statements for pre_leads
 const insertPreLeadStmt = db.prepare(`
   INSERT INTO pre_leads (
     channel_id,
@@ -108,16 +161,29 @@ const insertPreLeadStmt = db.prepare(`
     utm_campaign,
     utm_content,
     utm_term,
+    client_id,
     created_at
-  )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const getRecentPreLeadStmt = db.prepare(`
-  SELECT
-    id,
-    fbc,
-    fbp,
+  SELECT *
+  FROM pre_leads
+  WHERE channel_id = ?
+    AND created_at >= ?
+  ORDER BY created_at DESC
+  LIMIT 1
+`);
+
+// Joins insert prepared statement (later we use dynamic but keep lines)
+const insertJoinStmt = db.prepare(`
+  INSERT INTO joins (
+    telegram_user_id,
+    telegram_username,
+    channel_id,
+    channel_title,
+    joined_at,
+    meta_event_id,
     ip,
     country,
     user_agent,
@@ -130,480 +196,183 @@ const getRecentPreLeadStmt = db.prepare(`
     utm_campaign,
     utm_content,
     utm_term,
-    created_at
-  FROM pre_leads
-  WHERE channel_id = ?
-    AND created_at >= ?
-  ORDER BY created_at DESC
-  LIMIT 1
+    client_id
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
-const markPreLeadUsedStmt = null; // used column optional; abhi hum use nahi kar rahe
-
-// ----- Config from env -----
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
-const ADMIN_KEY = process.env.ADMIN_KEY || 'secret123';
-
-
-// ----- Simple admin login + SaaS panel (multi-client) -----
-
+// ----- AUTH MIDDLEWARE -----
 function requireAuth(req, res, next) {
-  try {
-    const session = req.cookies && req.cookies.uts_admin;
-    if (!session || session !== ADMIN_KEY) {
-      return res.redirect('/login');
-    }
-    next();
-  } catch (e) {
-    console.error('Auth error:', e);
-    return res.redirect('/login');
+  const sess = getSession(req);
+  if (!sess) {
+    return res.redirect('/auth/login');
   }
+  const user = db
+    .prepare('SELECT id, email, role FROM users WHERE id = ?')
+    .get(sess.userId);
+  if (!user) {
+    destroySession(req, res);
+    return res.redirect('/auth/login');
+  }
+  req.user = user;
+  next();
 }
 
-app.get('/login', (req, res) => {
-  res.send(`<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>UTS Login</title>
-  <style>
-    body { background:#050509; color:#fff; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
-    .card { background:#111827; padding:24px 28px; border-radius:16px; width:100%; max-width:360px; box-shadow:0 22px 45px rgba(0,0,0,0.55); }
-    h1 { font-size:20px; margin:0 0 4px; }
-    p { margin:0 0 16px; color:#9CA3AF; font-size:13px; }
-    label { display:block; font-size:13px; margin-bottom:4px; color:#E5E7EB; }
-    input { width:100%; padding:9px 10px; border-radius:10px; border:1px solid #1F2937; background:#020617; color:#E5E7EB; font-size:13px; outline:none; }
-    input:focus { border-color:#3B82F6; box-shadow:0 0 0 1px rgba(59,130,246,0.4); }
-    .field { margin-bottom:14px; }
-    button { width:100%; padding:10px 12px; border-radius:999px; border:none; background:#3B82F6; color:white; font-weight:600; font-size:14px; cursor:pointer; }
-    button:hover { filter:brightness(1.1); }
-    .hint { margin-top:12px; font-size:11px; color:#6B7280; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>UTS Admin Login</h1>
-    <p>Enter your admin key to access the panel.</p>
-    <form method="POST" action="/login">
-      <div class="field">
-        <label for="key">Admin key</label>
-        <input id="key" name="key" type="password" placeholder="Enter ADMIN_KEY" />
+function requireAdmin(req, res, next) {
+  const sess = getSession(req);
+  if (!sess) {
+    return res.redirect('/auth/login');
+  }
+  const user = db
+    .prepare('SELECT id, email, role FROM users WHERE id = ?')
+    .get(sess.userId);
+  if (!user || user.role !== 'admin') {
+    return res.status(403).send('Forbidden: Admin only');
+  }
+  req.user = user;
+  next();
+}
+
+// ----- AUTH ROUTES (login/logout) -----
+
+// GET /auth/login
+app.get('/auth/login', (req, res) => {
+  const sess = getSession(req);
+  if (sess) {
+    return res.redirect('/panel');
+  }
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Login - Telegram Tracker SaaS</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <style>
+        body {
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: radial-gradient(circle at top, #1f2937 0, #020617 55%);
+          color: #e5e7eb;
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin: 0;
+        }
+        .card {
+          background: rgba(15, 23, 42, 0.95);
+          border-radius: 16px;
+          padding: 24px;
+          width: 100%;
+          max-width: 360px;
+          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+          border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+        h1 {
+          font-size: 20px;
+          margin-bottom: 4px;
+        }
+        .muted {
+          font-size: 12px;
+          color: #9ca3af;
+          margin-bottom: 16px;
+        }
+        label {
+          display: block;
+          font-size: 12px;
+          margin-bottom: 4px;
+          color: #cbd5f5;
+        }
+        input {
+          width: 100%;
+          padding: 8px 10px;
+          border-radius: 8px;
+          border: 1px solid #1f2937;
+          background: #020617;
+          color: #e5e7eb;
+          font-size: 13px;
+          margin-bottom: 12px;
+        }
+        button {
+          width: 100%;
+          padding: 10px;
+          border-radius: 999px;
+          border: none;
+          background: linear-gradient(to right, #22c55e, #16a34a);
+          color: white;
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          margin-top: 4px;
+        }
+        button:hover {
+          filter: brightness(1.06);
+        }
+        .footer {
+          margin-top: 16px;
+          font-size: 11px;
+          color: #6b7280;
+          text-align: center;
+        }
+        a {
+          color: #38bdf8;
+          text-decoration: none;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Login</h1>
+        <div class="muted">Agency panel access ke liye email/password se login karein.</div>
+        <form method="POST" action="/auth/login">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" required />
+
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" required />
+
+          <button type="submit">Login</button>
+        </form>
+        <div class="footer">
+          Seed admin banane ke liye <code>/dev/seed-admin?key=${ADMIN_SECRET}</code> once call karein.
+        </div>
       </div>
-      <button type="submit">Login</button>
-    </form>
-    <div class="hint">
-      Use the <code>ADMIN_KEY</code> from your Render / .env settings.
-    </div>
-  </div>
-</body>
-</html>`);
+    </body>
+    </html>
+  `);
 });
 
-app.post('/login', (req, res) => {
-  const key = (req.body && req.body.key) || '';
-  if (!key || key !== ADMIN_KEY) {
-    return res.status(401).send('<p style="font-family:sans-serif;color:#fff;background:#000;padding:20px;">Invalid key. <a href="/login" style="color:#3B82F6;">Try again</a>.</p>');
+// POST /auth/login
+app.post('/auth/login', (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.redirect('/auth/login');
   }
-  res.cookie('uts_admin', key, { httpOnly: true, sameSite: 'lax' });
+  const user = db
+    .prepare('SELECT * FROM users WHERE email = ?')
+    .get(String(email).toLowerCase());
+  if (!user) {
+    return res.redirect('/auth/login');
+  }
+  const submittedHash = hashPassword(password);
+  if (submittedHash !== user.password_hash) {
+    return res.redirect('/auth/login');
+  }
+  createSession(res, user);
   return res.redirect('/panel');
 });
 
-app.get('/logout', (req, res) => {
-  res.clearCookie('uts_admin');
-  res.redirect('/login');
+// GET /auth/logout
+app.get('/auth/logout', (req, res) => {
+  destroySession(req, res);
+  res.redirect('/auth/login');
 });
 
-// Panel home: list all clients
-app.get('/panel', requireAuth, (req, res) => {
-  try {
-    const clients = db
-      .prepare('SELECT * FROM clients ORDER BY id DESC')
-      .all();
+// ----- LP TRACKING API: /api/v1/track/pageview -----
 
-    const rows = clients
-      .map((cl) => {
-        const plan = cl.plan || '';
-        const maxCh = cl.max_channels != null ? cl.max_channels : '';
-        const status = cl.is_active === 0 ? 'Disabled' : 'Active';
-        return `
-        <tr>
-          <td>${cl.id}</td>
-          <td>${cl.name || ''}</td>
-          <td>${cl.slug || ''}</td>
-          <td>${cl.public_key || ''}</td>
-          <td>${cl.secret_key || ''}</td>
-          <td>${plan}</td>
-          <td>${maxCh}</td>
-          <td>${status}</td>
-          <td>${cl.created_at || ''}</td>
-          <td><a href="/panel/client/${cl.id}" style="color:#60A5FA;">Open</a></td>
-        </tr>`;
-      })
-      .join('') || '<tr><td colspan="10" style="padding:12px;color:#6B7280;">No clients yet.</td></tr>';
-
-    res.send(`<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>UTS Panel</title>
-  <style>
-    body { background:#020617; color:#E5E7EB; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin:0; padding:24px; }
-    h1 { margin:0 0 4px; font-size:22px; }
-    h2 { margin:24px 0 10px; font-size:16px; }
-    .topbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
-    .pill { font-size:12px; padding:4px 8px; border-radius:999px; background:#111827; color:#9CA3AF; }
-    table { border-collapse:collapse; width:100%; font-size:13px; }
-    th, td { border:1px solid #1F2937; padding:6px 8px; text-align:left; }
-    th { background:#020617; }
-    tr:nth-child(even) td { background:#020617; }
-    tr:nth-child(odd) td { background:#030712; }
-    .form-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
-    input, select { padding:6px 8px; border-radius:8px; border:1px solid #374151; background:#020617; color:#E5E7EB; font-size:12px; min-width:140px; }
-    button { padding:7px 12px; border-radius:999px; border:none; background:#3B82F6; color:white; font-size:12px; cursor:pointer; }
-  </style>
-</head>
-<body>
-  <div class="topbar">
-    <div>
-      <h1>Universal Tracking Panel</h1>
-      <div class="pill">Admin workspace</div>
-    </div>
-    <div>
-      <a href="/dashboard" style="color:#9CA3AF;font-size:12px;margin-right:12px;">Global Dashboard</a>
-      <a href="/logout" style="color:#F87171;font-size:12px;">Logout</a>
-    </div>
-  </div>
-
-  <h2>Create new client</h2>
-  <form method="POST" action="/panel/create-client">
-    <div class="form-row">
-      <input name="name" placeholder="Client name" required />
-      <input name="slug" placeholder="Slug (optional)" />
-      <select name="plan">
-        <option value="starter">starter</option>
-        <option value="pro">pro</option>
-      </select>
-      <input name="max_channels" type="number" placeholder="Max channels (optional)" />
-    </div>
-    <button type="submit">Create client</button>
-  </form>
-
-  <h2 style="margin-top:24px;">All clients</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Name</th>
-        <th>Slug</th>
-        <th>Public key</th>
-        <th>Secret key</th>
-        <th>Plan</th>
-        <th>Max channels</th>
-        <th>Status</th>
-        <th>Created</th>
-        <th>Open</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rows}
-    </tbody>
-  </table>
-</body>
-</html>`);
-  } catch (err) {
-    console.error('❌ Error in /panel:', err);
-    res.status(500).send('Internal panel error');
-  }
-});
-
-app.post('/panel/create-client', requireAuth, (req, res) => {
-  try {
-    let { name, slug, plan, max_channels } = req.body || {};
-    name = (name || '').trim();
-    slug = (slug || '').trim() || null;
-    plan = (plan || 'starter').trim();
-    max_channels = max_channels ? Number(max_channels) : null;
-
-    if (!name) {
-      return res.status(400).send('Client name required');
-    }
-
-    const publicKey = 'PUB_' + Math.random().toString(36).slice(2, 10);
-    const secretKey = 'SEC_' + Math.random().toString(36).slice(2, 10);
-    const now = Math.floor(Date.now() / 1000);
-
-    db.prepare(
-      `
-      INSERT INTO clients (
-        name,
-        slug,
-        public_key,
-        secret_key,
-        plan,
-        max_channels,
-        is_active,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-    `
-    ).run(name, slug, publicKey, secretKey, plan, max_channels, now);
-
-    return res.redirect('/panel');
-  } catch (err) {
-    console.error('❌ Error in POST /panel/create-client:', err);
-    return res.status(500).send('Error creating client');
-  }
-});
-
-app.get('/panel/client/:id', requireAuth, (req, res) => {
-  try {
-    const clientId = Number(req.params.id);
-    if (!clientId) {
-      return res.status(400).send('Invalid client id');
-    }
-
-    const client = db
-      .prepare('SELECT * FROM clients WHERE id = ?')
-      .get(clientId);
-
-    if (!client) {
-      return res.status(404).send('Client not found');
-    }
-
-    const channels = db
-      .prepare('SELECT * FROM channels WHERE client_id = ? ORDER BY id DESC')
-      .all(clientId);
-
-    // Join counts per channel (by telegram_chat_id)
-    const joinCounts = {};
-    channels.forEach((ch) => {
-      const row = db
-        .prepare(
-          'SELECT COUNT(*) AS cnt FROM joins WHERE channel_id = ?'
-        )
-        .get(String(ch.telegram_chat_id));
-      joinCounts[ch.id] = row && row.cnt ? row.cnt : 0;
-    });
-
-    const channelRows =
-      channels
-        .map((ch) => {
-          const status = ch.is_active === 0 ? 'Disabled' : 'Active';
-          const totalJoins = joinCounts[ch.id] || 0;
-          const created = ch.created_at ? new Date(ch.created_at * 1000).toISOString() : '';
-          return `
-          <tr>
-            <td>${ch.id}</td>
-            <td>${ch.telegram_title || ''}</td>
-            <td>${ch.telegram_chat_id || ''}</td>
-            <td>${ch.deep_link || ''}</td>
-            <td>${ch.pixel_id || ''}</td>
-            <td>${ch.lp_url || ''}</td>
-            <td>${status}</td>
-            <td>${totalJoins}</td>
-            <td>${created}</td>
-          </tr>`;
-        })
-        .join('') ||
-      '<tr><td colspan="9" style="padding:12px;color:#6B7280;">No channels for this client yet.</td></tr>';
-
-    res.send(`<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Client ${client.id} · UTS Panel</title>
-  <style>
-    body { background:#020617; color:#E5E7EB; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin:0; padding:24px; }
-    h1 { margin:0 0 4px; font-size:22px; }
-    h2 { margin:24px 0 10px; font-size:16px; }
-    .topbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
-    .pill { font-size:12px; padding:4px 8px; border-radius:999px; background:#111827; color:#9CA3AF; }
-    table { border-collapse:collapse; width:100%; font-size:13px; margin-top:12px; }
-    th, td { border:1px solid #1F2937; padding:6px 8px; text-align:left; }
-    th { background:#020617; }
-    tr:nth-child(even) td { background:#020617; }
-    tr:nth-child(odd) td { background:#030712; }
-    .meta { font-size:12px; color:#9CA3AF; }
-    .meta code { background:#020617; padding:2px 4px; border-radius:4px; }
-  </style>
-</head>
-<body>
-  <div class="topbar">
-    <div>
-      <h1>${client.name || 'Client'} (ID: ${client.id})</h1>
-      <div class="pill">Slug: ${client.slug || '—'}</div>
-    </div>
-    <div>
-      <a href="/panel" style="color:#9CA3AF;font-size:12px;margin-right:12px;">← Back to clients</a>
-      <a href="/logout" style="color:#F87171;font-size:12px;">Logout</a>
-    </div>
-  </div>
-
-  <div class="meta">
-    <div>Public key: <code>${client.public_key || '—'}</code></div>
-    <div>Secret key: <code>${client.secret_key || '—'}</code></div>
-    <div>Default pixel: <code>${client.default_pixel_id || '—'}</code></div>
-    <div>Default Meta token: <code>${client.default_meta_token || '—'}</code></div>
-    <div>Plan: <code>${client.plan || '—'}</code> · Max channels: <code>${client.max_channels != null ? client.max_channels : '—'}</code></div>
-  </div>
-
-  <h2>Channels for this client</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Channel title</th>
-        <th>Chat ID</th>
-        <th>Deep link</th>
-        <th>Pixel ID</th>
-        <th>LP URL</th>
-        <th>Status</th>
-        <th>Total joins</th>
-        <th>Created</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${channelRows}
-    </tbody>
-  </table>
-</body>
-</html>`);
-  } catch (err) {
-    console.error('❌ Error in GET /panel/client/:id:', err);
-    res.status(500).send('Internal client panel error');
-  }
-});
-
-
-// Default Pixel & LP (fallback)
-const DEFAULT_META_PIXEL_ID = '1430358881781923';
-const DEFAULT_PUBLIC_LP_URL = 'btcapi.netlify.app/';
-
-const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
-const PORT = process.env.PORT || 3000;
-
-// ----- Helpers -----
-
-// Meta user_data ke liye hash
-function hashSha256(str) {
-  return crypto.createHash('sha256').update(str).digest('hex');
-}
-
-// Date ko YYYY-MM-DD string me
-function formatDateYYYYMMDD(timestamp) {
-  const d = new Date(timestamp * 1000);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-// Random event_id for Meta dedup
-function generateEventId() {
-  return crypto.randomBytes(16).toString('hex');
-}
-
-// ----- Basic health route -----
-app.get('/', (req, res) => {
-  res.send('Telegram Funnel Bot running ✅');
-});
-
-// ----- Debug: last joins -----
-app.get('/debug-joins', (req, res) => {
-  try {
-    const rows = db
-      .prepare('SELECT * FROM joins ORDER BY id DESC LIMIT 20')
-      .all();
-    res.json(rows);
-  } catch (err) {
-    console.error('❌ Error reading joins:', err.message);
-    res.status(500).json({ error: 'DB error' });
-  }
-});
-
-// ----- Debug: channels table -----
-app.get('/debug-channels', (req, res) => {
-  try {
-    const rows = db
-      .prepare('SELECT * FROM channels ORDER BY id DESC LIMIT 20')
-      .all();
-    res.json(rows);
-  } catch (err) {
-    console.error('❌ Error reading channels:', err.message);
-    res.status(500).json({ error: 'DB error' });
-  }
-});
-
-// ----- NEW: SaaS-style pageview tracking (multi-client via public_key) -----
-// Yaha sirf gating ho rahi hai public_key se.
-// Insert same hai jo /pre-lead use karta hai → DB error nahi aayega.
 app.post('/api/v1/track/pageview', (req, res) => {
   try {
-    const {
-      public_key,
-      channel_id,
-      fbc,
-      fbp,
-      source,
-      utm_source,
-      utm_medium,
-      utm_campaign,
-      utm_content,
-      utm_term,
-    } = req.body || {};
+    const nowTs = Math.floor(Date.now() / 1000);
 
-    if (!public_key) {
-      return res.status(400).json({ ok: false, error: 'public_key required' });
-    }
-    if (!channel_id) {
-      return res.status(400).json({ ok: false, error: 'channel_id required' });
-    }
-
-    // Client lookup (multi-tenant gate)
-    const client = db
-      .prepare('SELECT * FROM clients WHERE public_key = ?')
-      .get(String(public_key));
-
-    if (!client) {
-      return res.status(403).json({ ok: false, error: 'invalid public_key' });
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const ip = getClientIp(req);
-    const country = getCountryFromHeaders(req);
-    const userAgent = req.headers['user-agent'] || null;
-    const { deviceType, browser, os } = parseUserAgent(userAgent);
-
-    // Insert exactly like /pre-lead (without client_id)
-    insertPreLeadStmt.run(
-      String(channel_id),
-      fbc || null,
-      fbp || null,
-      ip || null,
-      country || null,
-      userAgent || null,
-      deviceType || null,
-      browser || null,
-      os || null,
-      source || null,
-      utm_source || null,
-      utm_medium || null,
-      utm_campaign || null,
-      utm_content || null,
-      utm_term || null,
-      now
-    );
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('❌ Error in /api/v1/track/pageview:', err.message || err);
-    return res.status(500).json({ ok: false, error: 'internal_error' });
-  }
-});
-
-// ----- Old LP endpoint: pre-lead capture (fbc/fbp + tracking store) -----
-app.post('/pre-lead', (req, res) => {
-  try {
     const {
       channel_id,
       fbc,
@@ -614,20 +383,26 @@ app.post('/pre-lead', (req, res) => {
       utm_campaign,
       utm_content,
       utm_term,
+      client_id
     } = req.body || {};
 
     if (!channel_id) {
-      return res
-        .status(400)
-        .json({ ok: false, error: 'channel_id required' });
+      return res.status(400).json({ ok: false, error: 'channel_id is required' });
     }
 
-    const now = Math.floor(Date.now() / 1000);
-
     const ip = getClientIp(req);
-    const country = getCountryFromHeaders(req);
-    const userAgent = req.headers['user-agent'] || null;
-    const { deviceType, browser, os } = parseUserAgent(userAgent);
+    const ua = req.headers['user-agent'] || null;
+    const country = req.headers['cf-ipcountry'] || null;
+
+    let deviceType = null;
+    let browser = null;
+    let os = null;
+    if (ua) {
+      const info = classifyDevice(ua);
+      deviceType = info.deviceType;
+      browser = info.browser;
+      os = info.os;
+    }
 
     insertPreLeadStmt.run(
       String(channel_id),
@@ -635,7 +410,7 @@ app.post('/pre-lead', (req, res) => {
       fbp || null,
       ip || null,
       country || null,
-      userAgent || null,
+      ua || null,
       deviceType || null,
       browser || null,
       os || null,
@@ -645,84 +420,93 @@ app.post('/pre-lead', (req, res) => {
       utm_campaign || null,
       utm_content || null,
       utm_term || null,
-      now
+      client_id || null,
+      nowTs
     );
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error('❌ Error in /pre-lead:', err.message || err);
-    return res.status(500).json({ ok: false, error: 'internal_error' });
+    console.error('❌ Error in /api/v1/track/pageview:', err);
+    return res.status(500).json({ ok: false, error: 'internal' });
   }
 });
 
-// ----- Telegram webhook -----
-app.post('/telegram-webhook', async (req, res) => {
-  const update = req.body;
-  console.log('Incoming update:', JSON.stringify(update, null, 2));
+// ----- TELEGRAM WEBHOOK -----
 
+app.post(`/bot${TELEGRAM_BOT_TOKEN}`, async (req, res) => {
   try {
-    if (update.chat_join_request) {
-      const jr = update.chat_join_request;
-      const user = jr.from;
-      const chat = jr.chat;
+    const body = req.body;
 
-      // 1) Try approve join request
-      try {
-        await approveJoinRequest(chat.id, user.id);
-        console.log('✅ Approved join request for user:', user.id);
-      } catch (e) {
-        console.error('❌ Telegram approveChatJoinRequest error RAW:');
-        console.error('MESSAGE:', e.message);
-        console.error('IS_AXIOS_ERROR:', e.isAxiosError);
-        if (e.response) {
-          console.error('STATUS:', e.response.status);
-          console.error('DATA:', JSON.stringify(e.response.data, null, 2));
-        } else {
-          console.error('NO RESPONSE OBJECT, FULL ERROR:', e);
+    if (body.chat_join_request) {
+      const joinRequest = body.chat_join_request;
+      const user = joinRequest.from;
+      console.log('Incoming join_request:', joinRequest);
+
+      const approveUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/approveChatJoinRequest`;
+      await axios.post(approveUrl, {
+        chat_id: joinRequest.chat.id,
+        user_id: user.id
+      });
+      console.log('✅ Approved join request for user:', user.id);
+
+      const clientIdForChannel = (() => {
+        const channelRow = db
+          .prepare('SELECT client_id FROM channels WHERE telegram_chat_id = ?')
+          .get(String(joinRequest.chat.id));
+        if (channelRow && channelRow.client_id) {
+          return channelRow.client_id;
         }
-      }
+        return 1;
+      })();
 
-      // 2) Fire Meta CAPI in background (not blocking webhook)
       try {
-        sendMetaLeadEvent(user, jr).catch((e) => {
-          console.error(
-            '❌ Meta CAPI sendMetaLeadEvent error:',
-            e.response?.data || e.message || e
-          );
-        });
+        await sendMetaLeadEvent(user, joinRequest);
       } catch (e) {
         console.error(
           '❌ Meta CAPI (outer try) error:',
           e.response?.data || e.message || e
         );
       }
+
+      try {
+        insertJoinStmt.run(
+          String(user.id),
+          user.username || null,
+          String(joinRequest.chat.id),
+          joinRequest.chat.title || null,
+          Math.floor(Date.now() / 1000),
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          clientIdForChannel
+        );
+        console.log('✅ Join stored in joins table for user:', user.id);
+      } catch (err) {
+        console.error('❌ Error inserting into joins table:', err.message || err);
+      }
     }
 
-    // ✅ Always reply 200 to Telegram so woh retry na kare
     res.sendStatus(200);
   } catch (err) {
     console.error(
       '❌ Error in webhook handler (outer):',
       err.response?.data || err.message || err
     );
-    // still 200 to avoid Telegram retries spam
     res.sendStatus(200);
   }
 });
 
-// ----- Helper: approve join request -----
-async function approveJoinRequest(chatId, userId) {
-  const url = `${TELEGRAM_API}/approveChatJoinRequest`;
-  const payload = {
-    chat_id: chatId,
-    user_id: userId,
-  };
-
-  const res = await axios.post(url, payload);
-  console.log('Telegram approve response:', res.data);
-}
-
-// ----- Helper: channel config nikaalna ya auto-create karna -----
+// ----- Helper: Ensure we have a channels row for each incoming join -----
 function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
   const chat = joinRequest.chat;
   const telegramChatId = String(chat.id);
@@ -732,7 +516,6 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
     .get(telegramChatId);
 
   if (!channel) {
-    // Agar channel row nahi hai to naya bana do (default client_id = 1)
     const stmt = db.prepare(`
       INSERT INTO channels (
         client_id,
@@ -740,18 +523,20 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
         telegram_title,
         deep_link,
         pixel_id,
+        meta_token,
         lp_url,
         created_at,
         is_active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
     `);
 
     const info = stmt.run(
-      1, // default client
+      1,
       telegramChatId,
       chat.title || null,
-      null, // deep_link abhi null
+      null,
       DEFAULT_META_PIXEL_ID,
+      null,
       DEFAULT_PUBLIC_LP_URL,
       nowTs
     );
@@ -763,18 +548,19 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       telegram_title: chat.title || null,
       deep_link: null,
       pixel_id: DEFAULT_META_PIXEL_ID,
+      meta_token: null,
       lp_url: DEFAULT_PUBLIC_LP_URL,
       created_at: nowTs,
-      is_active: 1,
+      is_active: 1
     };
 
     console.log('🆕 Auto-created channel row:', channel);
   } else {
-    // Optionally: agar title change ho gaya ho to update
     if (chat.title && chat.title !== channel.telegram_title) {
-      db.prepare(
-        'UPDATE channels SET telegram_title = ? WHERE id = ?'
-      ).run(chat.title, channel.id);
+      db.prepare('UPDATE channels SET telegram_title = ? WHERE id = ?').run(
+        chat.title,
+        channel.id
+      );
       channel.telegram_title = chat.title;
     }
   }
@@ -787,7 +573,6 @@ async function sendMetaLeadEvent(user, joinRequest) {
   const eventTime = Math.floor(Date.now() / 1000);
   const channelId = String(joinRequest.chat.id);
 
-  // 🔹 Last 30 minutes ke andar iss channel ke liye koi pre_lead mila?
   const thirtyMinutesAgo = eventTime - 30 * 60;
   let fbcForThisLead = null;
   let fbpForThisLead = null;
@@ -832,7 +617,6 @@ async function sendMetaLeadEvent(user, joinRequest) {
     );
   }
 
-  // ⭐ Debug log to see which fbc/fbp were used
   console.log('Using fbcForThisLead:', fbcForThisLead, 'fbpForThisLead:', fbpForThisLead);
   console.log('Tracking for lead:', {
     ipForThisLead,
@@ -846,7 +630,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
     utmMediumForThisLead,
     utmCampaignForThisLead,
     utmContentForThisLead,
-    utmTermForThisLead,
+    utmTermForThisLead
   });
 
   // Channel config (pixel, LP, client)
@@ -858,7 +642,37 @@ async function sendMetaLeadEvent(user, joinRequest) {
   const pixelId = channelConfig.pixel_id || DEFAULT_META_PIXEL_ID;
   const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
 
-  const url = `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${META_ACCESS_TOKEN}`;
+  // Token priority: channel.meta_token > client.default_meta_token > none (skip CAPI)
+  let clientForChannel = null;
+  if (channelConfig.client_id) {
+    try {
+      clientForChannel = db
+        .prepare('SELECT * FROM clients WHERE id = ?')
+        .get(channelConfig.client_id);
+    } catch (e) {
+      console.error(
+        '❌ Error fetching client for channel in sendMetaLeadEvent:',
+        e.message || e
+      );
+    }
+  }
+
+  const tokenToUse =
+    (channelConfig.meta_token && channelConfig.meta_token.trim()) ||
+    (clientForChannel &&
+      clientForChannel.default_meta_token &&
+      clientForChannel.default_meta_token.trim()) ||
+    null;
+
+  if (!tokenToUse) {
+    console.log(
+      'ℹ️ No Meta token configured for this channel/client. Skipping CAPI send, only storing join.'
+    );
+  }
+
+  const url = tokenToUse
+    ? `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${tokenToUse}`
+    : null;
 
   const externalIdHash = hashSha256(String(user.id));
   const eventId = generateEventId();
@@ -907,21 +721,31 @@ async function sendMetaLeadEvent(user, joinRequest) {
     event_id: eventId,
     event_source_url: lpUrl,
     action_source: 'website',
-    user_data: userData
+    user_data: userData,
+    custom_data: customData
   };
-
-  if (Object.keys(customData).length > 0) {
-    eventBody.custom_data = customData;
-  }
 
   const payload = {
     data: [eventBody]
   };
 
-  const res = await axios.post(url, payload);
-  console.log('Meta CAPI response:', res.data);
+  let metaEventIdToStore = null;
 
-  // ✅ Joins table me log karein – ID ko insert nahi kar rahe, SQLite auto increment karega
+  if (url) {
+    try {
+      const res = await axios.post(url, payload);
+      console.log('Meta CAPI response:', res.data);
+      metaEventIdToStore = eventId;
+    } catch (e) {
+      console.error(
+        '❌ Meta CAPI (outer try) error:',
+        e.response?.data || e.message || e
+      );
+    }
+  } else {
+    console.log('ℹ️ CAPI URL null (no token). Skipping HTTP call.');
+  }
+
   db.prepare(
     `
     INSERT INTO joins 
@@ -944,8 +768,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
         utm_campaign,
         utm_content,
         utm_term
-      )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   ).run(
     String(user.id),
@@ -953,7 +776,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
     String(joinRequest.chat.id),
     joinRequest.chat.title || null,
     eventTime,
-    eventId,
+    metaEventIdToStore,
     ipForThisLead || null,
     countryForThisLead || null,
     uaForThisLead || null,
@@ -977,20 +800,20 @@ app.post('/admin/update-channel', (req, res) => {
     const {
       admin_key,
       telegram_chat_id,
+      client_id,
       pixel_id,
       lp_url,
-      client_id,
-      deep_link,
-    } = req.body;
+      deep_link
+    } = req.body || {};
 
-    if (admin_key !== ADMIN_KEY) {
-      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    if (admin_key !== ADMIN_SECRET) {
+      return res.status(403).json({ ok: false, error: 'bad admin key' });
     }
 
     if (!telegram_chat_id) {
       return res
         .status(400)
-        .json({ ok: false, error: 'telegram_chat_id required' });
+        .json({ ok: false, error: 'telegram_chat_id is required' });
     }
 
     const channel = db
@@ -1000,483 +823,313 @@ app.post('/admin/update-channel', (req, res) => {
     if (!channel) {
       return res
         .status(404)
-        .json({ ok: false, error: 'Channel not found' });
+        .json({ ok: false, error: 'channel config not found' });
     }
 
-    const newPixel = pixel_id || channel.pixel_id;
-    const newLp = lp_url || channel.lp_url;
-    const newClientId = client_id || channel.client_id;
-    const newDeepLink = deep_link || channel.deep_link;
+    const newClientId = client_id ? parseInt(client_id, 10) : channel.client_id;
+    const newPixelId = pixel_id || channel.pixel_id || DEFAULT_META_PIXEL_ID;
+    const newLpUrl = lp_url || channel.lp_url || DEFAULT_PUBLIC_LP_URL;
+    const newDeepLink = deep_link || channel.deep_link || null;
 
     db.prepare(
       `
       UPDATE channels
-      SET pixel_id = ?, lp_url = ?, client_id = ?, deep_link = ?
-      WHERE telegram_chat_id = ?
+      SET client_id = ?, pixel_id = ?, lp_url = ?, deep_link = ?
+      WHERE id = ?
     `
-    ).run(
-      newPixel,
-      newLp,
-      newClientId,
-      newDeepLink,
-      String(telegram_chat_id)
-    );
+    ).run(newClientId, newPixelId, newLpUrl, newDeepLink, channel.id);
 
-    return res.json({
-      ok: true,
-      message: 'Channel updated',
-      data: {
-        telegram_chat_id,
-        pixel_id: newPixel,
-        lp_url: newLp,
-        client_id: newClientId,
-        deep_link: newDeepLink,
-      },
+    console.log('✅ Updated channel config via /admin/update-channel:', {
+      telegram_chat_id,
+      newClientId,
+      newPixelId,
+      newLpUrl,
+      newDeepLink
     });
+
+    return res.json({ ok: true });
   } catch (err) {
     console.error('❌ Error in /admin/update-channel:', err);
-    res.status(500).json({ ok: false, error: 'Internal error' });
+    return res.status(500).json({ ok: false, error: 'internal' });
   }
 });
 
-// ----- JSON Stats API: /api/stats -----
-app.get('/api/stats', (req, res) => {
-  try {
-    // Total joins
-    const totalRow = db.prepare('SELECT COUNT(*) AS cnt FROM joins').get();
-    const totalJoins = totalRow.cnt || 0;
-
-    // Today joins
-    const now = Math.floor(Date.now() / 1000);
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
-
-    const todayRow = db
-      .prepare(
-        'SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?'
-      )
-      .get(startOfDayTs, now);
-    const todayJoins = todayRow.cnt || 0;
-
-    // Last 7 days breakdown
-    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
-    const rows7 = db
-      .prepare(
-        'SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC'
-      )
-      .all(sevenDaysAgoTs);
-
-    const byDateMap = {};
-    for (const r of rows7) {
-      const dateKey = formatDateYYYYMMDD(r.joined_at);
-      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
-    }
-
-    const last7Days = Object.keys(byDateMap)
-      .sort()
-      .map((date) => ({ date, count: byDateMap[date] }));
-
-    // By channel
-    const channels = db
-      .prepare(
-        `
-        SELECT 
-          channel_id,
-          channel_title,
-          COUNT(*) AS total
-        FROM joins
-        GROUP BY channel_id, channel_title
-        ORDER BY total DESC
-      `
-      )
-      .all();
-
-    // Recent joins with tracking (for UI)
-    const recentJoins = db
-      .prepare(
-        `
-        SELECT
-          telegram_username,
-          channel_title,
-          channel_id,
-          joined_at,
-          ip,
-          country,
-          device_type,
-          browser,
-          os,
-          source,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term
-        FROM joins
-        ORDER BY joined_at DESC
-        LIMIT 50
-      `
-      )
-      .all();
-
-    res.json({
-      ok: true,
-      total_joins: totalJoins,
-      today_joins: todayJoins,
-      last_7_days: last7Days,
-      by_channel: channels,
-      recent_joins: recentJoins,
-    });
-  } catch (err) {
-    console.error('❌ Error in /api/stats:', err);
-    res.status(500).json({ ok: false, error: 'Internal error' });
-  }
+// ----- DEV: Simple health check -----
+app.get('/health', (req, res) => {
+  res.json({ ok: true, uptime: process.uptime() });
 });
 
-// ----- HTML Dashboard: /dashboard -----
-app.get('/dashboard', (req, res) => {
-  try {
-    const totalRow = db.prepare('SELECT COUNT(*) AS cnt FROM joins').get();
-    const totalJoins = totalRow.cnt || 0;
+// ===== PANEL / SAAS =====
 
-    const now = Math.floor(Date.now() / 1000);
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
-
-    const todayRow = db
-      .prepare(
-        'SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?'
-      )
-      .get(startOfDayTs, now);
-    const todayJoins = todayRow.cnt || 0;
-
-    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
-    const rows7 = db
-      .prepare(
-        'SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC'
-      )
-      .all(sevenDaysAgoTs);
-
-    const byDateMap = {};
-    for (const r of rows7) {
-      const dateKey = formatDateYYYYMMDD(r.joined_at);
-      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
-    }
-
-    const last7Days = Object.keys(byDateMap)
-      .sort()
-      .map((date) => ({ date, count: byDateMap[date] }));
-
-    const channels = db
-      .prepare(
-        `
-        SELECT 
-          channel_id,
-          channel_title,
-          COUNT(*) AS total
-        FROM joins
-        GROUP BY channel_id, channel_title
-        ORDER BY total DESC
+// GET /panel - list of clients for logged-in user
+app.get('/panel', requireAuth, (req, res) => {
+  const user = req.user;
+  const clients = db
+    .prepare(
       `
-      )
-      .all();
+      SELECT
+        c.id,
+        c.name,
+        c.slug,
+        c.plan,
+        c.max_channels,
+        c.is_active,
+        c.created_at,
+        c.public_key,
+        c.secret_key
+      FROM clients c
+      WHERE c.owner_user_id = ?
+      ORDER BY c.created_at DESC, c.id DESC
+    `
+    )
+    .all(user.id);
 
-    const recentJoins = db
-      .prepare(
-        `
-        SELECT
-          telegram_username,
-          channel_title,
-          channel_id,
-          joined_at,
-          ip,
-          country,
-          device_type,
-          browser,
-          os,
-          source,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term
-        FROM joins
-        ORDER BY joined_at DESC
-        LIMIT 50
-      `
-      )
-      .all();
-
-    // Simple HTML UI
-    res.send(`
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8" />
-        <title>Telegram Funnel Stats</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <style>
-          body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: #0f172a;
-            color: #e5e7eb;
-            padding: 24px;
-          }
-          .container {
-            max-width: 1100px;
-            margin: 0 auto;
-          }
-          h1 {
-            font-size: 24px;
-            margin-bottom: 16px;
-          }
-          .cards {
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-            margin-bottom: 24px;
-          }
-          .card {
-            background: #111827;
-            border-radius: 12px;
-            padding: 16px 18px;
-            flex: 1 1 180px;
-            min-width: 180px;
-          }
-          .card h2 {
-            font-size: 14px;
-            color: #9ca3af;
-            margin-bottom: 8px;
-          }
-          .card .value {
-            font-size: 22px;
-            font-weight: 600;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 24px;
-          }
-          th, td {
-            padding: 8px 10px;
-            border-bottom: 1px solid #1f2937;
-            font-size: 12px;
-          }
-          th {
-            text-align: left;
-            color: #9ca3af;
-            white-space: nowrap;
-          }
-          td {
-            white-space: nowrap;
-          }
-          tr:hover {
-            background: #111827;
-          }
-          .section-title {
-            font-size: 16px;
-            margin: 16px 0 8px;
-          }
-          .muted {
-            color: #6b7280;
-            font-size: 12px;
-          }
-          .nowrap {
-            white-space: nowrap;
-          }
-          @media (max-width: 900px) {
-            table {
-              display: block;
-              overflow-x: auto;
-            }
-          }
-          @media (max-width: 600px) {
-            .cards {
-              flex-direction: column;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>Telegram Funnel Stats 📊</h1>
-
-          <div class="cards">
-            <div class="card">
-              <h2>Total Joins</h2>
-              <div class="value">${totalJoins}</div>
-            </div>
-            <div class="card">
-              <h2>Today Joins</h2>
-              <div class="value">${todayJoins}</div>
-            </div>
-          </div>
-
-          <div>
-            <div class="section-title">Last 7 Days</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Joins</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  last7Days.length === 0
-                    ? `<tr><td colspan="2" class="muted">No data yet</td></tr>`
-                    : last7Days
-                        .map(
-                          (d) => `
-                  <tr>
-                    <td>${d.date}</td>
-                    <td>${d.count}</td>
-                  </tr>`
-                        )
-                        .join('')
-                }
-              </tbody>
-            </table>
-          </div>
-
-          <div>
-            <div class="section-title">By Channel</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Channel Title</th>
-                  <th>Channel ID</th>
-                  <th>Total Joins</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  channels.length === 0
-                    ? `<tr><td colspan="3" class="muted">No data yet</td></tr>`
-                    : channels
-                        .map(
-                          (c) => `
-                  <tr>
-                    <td>${c.channel_title || '(no title)'}</td>
-                    <td>${c.channel_id}</td>
-                    <td>${c.total}</td>
-                  </tr>`
-                        )
-                        .join('')
-                }
-              </tbody>
-            </table>
-          </div>
-
-          <div>
-            <div class="section-title">Recent Joins (Tracking Details)</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Username</th>
-                  <th>Channel</th>
-                  <th>IP</th>
-                  <th>Country</th>
-                  <th>Device</th>
-                  <th>Browser</th>
-                  <th>OS</th>
-                  <th>Source</th>
-                  <th>UTM Source</th>
-                  <th>UTM Medium</th>
-                  <th>UTM Campaign</th>
-                  <th>UTM Content</th>
-                  <th>UTM Term</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  recentJoins.length === 0
-                    ? `<tr><td colspan="14" class="muted">No joins yet</td></tr>`
-                    : recentJoins
-                        .map((j) => {
-                          const dt = new Date(j.joined_at * 1000).toISOString().replace('T',' ').substring(0,19);
-                          return `
-                  <tr>
-                    <td class="nowrap">${dt}</td>
-                    <td>${j.telegram_username || '(no username)'}</td>
-                    <td>${j.channel_title || ''}</td>
-                    <td>${j.ip || ''}</td>
-                    <td>${j.country || ''}</td>
-                    <td>${j.device_type || ''}</td>
-                    <td>${j.browser || ''}</td>
-                    <td>${j.os || ''}</td>
-                    <td>${j.source || ''}</td>
-                    <td>${j.utm_source || ''}</td>
-                    <td>${j.utm_medium || ''}</td>
-                    <td>${j.utm_campaign || ''}</td>
-                    <td>${j.utm_content || ''}</td>
-                    <td>${j.utm_term || ''}</td>
-                  </tr>`;
-                        })
-                        .join('')
-                }
-              </tbody>
-            </table>
-          </div>
-
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Agency Panel - Telegram Tracker</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <style>
+        body {
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: #020617;
+          color: #e5e7eb;
+          padding: 20px;
+          margin: 0;
+        }
+        h1 {
+          font-size: 22px;
+          margin-bottom: 12px;
+        }
+        .top-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 16px;
+        }
+        .muted {
+          font-size: 12px;
+          color: #9ca3af;
+        }
+        a {
+          color: #38bdf8;
+          text-decoration: none;
+          font-size: 13px;
+        }
+        .logout {
+          font-size: 12px;
+          color: #f97316;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 16px;
+          font-size: 13px;
+        }
+        th, td {
+          border: 1px solid #1f2937;
+          padding: 8px;
+          text-align: left;
+        }
+        th {
+          background: #020617;
+        }
+        tr:nth-child(even) {
+          background: #020617;
+        }
+        .badge {
+          display: inline-block;
+          padding: 2px 8px;
+          border-radius: 999px;
+          font-size: 11px;
+          border: 1px solid #4b5563;
+        }
+        .badge-green {
+          border-color: #22c55e;
+          color: #22c55e;
+        }
+        .btn {
+          background: #22c55e;
+          border-radius: 999px;
+          color: #fff;
+          padding: 6px 12px;
+          border: none;
+          cursor: pointer;
+          font-size: 12px;
+        }
+        .btn-secondary {
+          background: #0ea5e9;
+        }
+        .row-actions a {
+          margin-right: 8px;
+        }
+        .card {
+          border: 1px solid #1f2937;
+          border-radius: 12px;
+          padding: 12px 14px;
+          margin-bottom: 16px;
+          background: radial-gradient(circle at top left, #0f172a 0, #020617 60%);
+        }
+        .card-title {
+          font-size: 14px;
+          font-weight: 600;
+          margin-bottom: 4px;
+        }
+        .card-sub {
+          font-size: 12px;
+          color: #9ca3af;
+        }
+        .badge-key {
+          font-size: 11px;
+          color: #9ca3af;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="top-bar">
+        <div>
+          <h1>Agency Panel</h1>
           <div class="muted">
-            Simple v2 dashboard – tracking with IP, device, browser, OS, source & UTM.
+            Logged in as <strong>${user.email}</strong> (${user.role})
           </div>
         </div>
-      </body>
-      </html>
-    `);
-  } catch (err) {
-    console.error('❌ Error in /dashboard:', err);
-    res.status(500).send('Internal error');
-  }
+        <div>
+          <a href="/auth/logout" class="logout">Logout</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Create new client</div>
+        <div class="card-sub">Ek client = ek agency / ek business jiske multiple Telegram channels ho sakte hain.</div>
+        <form method="POST" action="/panel/new-client" style="margin-top:8px;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <div style="flex:1 1 180px;">
+              <label style="font-size:12px;">Name</label>
+              <input name="name" type="text" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:12px;" placeholder="VeerBhai Agency" required />
+            </div>
+            <div style="flex:1 1 180px;">
+              <label style="font-size:12px;">Slug (optional)</label>
+              <input name="slug" type="text" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:12px;" placeholder="veerbhai-agency" />
+            </div>
+            <div style="flex:1 1 180px;">
+              <label style="font-size:12px;">Plan</label>
+              <input name="plan" type="text" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:12px;" placeholder="starter / pro" />
+            </div>
+            <div style="flex:1 1 120px;">
+              <label style="font-size:12px;">Max channels</label>
+              <input name="max_channels" type="number" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:12px;" placeholder="10" />
+            </div>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+            <div style="flex:1 1 220px;">
+              <label style="font-size:12px;">Default Pixel ID (optional)</label>
+              <input name="default_pixel_id" type="text" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:12px;" placeholder="Meta Pixel ID" />
+            </div>
+            <div style="flex:1 1 260px;">
+              <label style="font-size:12px;">Default Meta Access Token (optional)</label>
+              <input name="default_meta_token" type="text" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:12px;" placeholder="CAPI access token" />
+            </div>
+          </div>
+          <div style="margin-top:8px;">
+            <button type="submit" class="btn">Create client</button>
+          </div>
+        </form>
+      </div>
+
+      <h2 style="font-size:16px;margin-top:16px;">Your clients</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Slug</th>
+            <th>Plan</th>
+            <th>Max channels</th>
+            <th>Status</th>
+            <th>Keys</th>
+            <th>Created</th>
+            <th>Open</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            clients.length === 0
+              ? '<tr><td colspan="9" class="muted">No clients yet</td></tr>'
+              : clients
+                  .map((c) => {
+                    const created = c.created_at
+                      ? new Date(c.created_at * 1000).toISOString().substring(0, 10)
+                      : '';
+                    const status = c.is_active ? 'Active' : 'Inactive';
+                    return `
+            <tr>
+              <td>${c.id}</td>
+              <td>${c.name || ''}</td>
+              <td><code>${c.slug || ''}</code></td>
+              <td>${c.plan || ''}</td>
+              <td>${c.max_channels || ''}</td>
+              <td><span class="badge ${c.is_active ? 'badge-green' : ''}">${status}</span></td>
+              <td>
+                <div class="badge-key">PUB: <code>${c.public_key || ''}</code></div>
+                <div class="badge-key">SEC: <code>${c.secret_key || ''}</code></div>
+              </td>
+              <td>${created}</td>
+              <td class="row-actions">
+                <a href="/panel/client/${c.id}">Open</a>
+              </td>
+            </tr>
+          `;
+                  })
+                  .join('')
+          }
+        </tbody>
+      </table>
+    </body>
+    </html>
+  `);
 });
 
-// ----- DEV: Seed admin + client + keys (one-time helper) -----
-app.get('/dev/seed-admin', async (req, res) => {
+// POST /panel/new-client
+app.post('/panel/new-client', requireAuth, (req, res) => {
   try {
-    const key = req.query.admin_key;
-    if (key !== ADMIN_KEY) {
-      return res.status(401).json({ ok: false, error: 'Invalid admin_key' });
+    const user = req.user;
+    let {
+      name,
+      slug,
+      plan,
+      max_channels,
+      default_pixel_id,
+      default_meta_token
+    } = req.body || {};
+
+    name = (name || '').trim();
+    slug = (slug || '').trim();
+    plan = (plan || '').trim();
+    default_pixel_id = (default_pixel_id || '').trim();
+    default_meta_token = (default_meta_token || '').trim();
+
+    if (!name) {
+      return res.redirect('/panel?error=name');
     }
 
-    // 1) Check if any admin user already exists
-    const existingAdmin = db.prepare(
-      'SELECT * FROM users WHERE role = ? LIMIT 1'
-    ).get('admin');
-
-    if (existingAdmin) {
-      return res.json({
-        ok: true,
-        message: 'Admin already exists, nothing to do.',
-        admin_email: existingAdmin.email
-      });
+    if (!slug) {
+      slug = slugifyName(name);
     }
+
+    const maxChannels = max_channels
+      ? parseInt(max_channels, 10) || 0
+      : 0;
+
+    const apiKey = generateApiKey();
+    const publicKey = 'pub_' + crypto.randomBytes(12).toString('hex');
+    const secretKey = 'sec_' + crypto.randomBytes(16).toString('hex');
 
     const now = Math.floor(Date.now() / 1000);
 
-    const email = 'admin@uts.local';   // dev ke liye, baad me change kar dena
-    const password = 'Admin@123';      // dev ke liye, UI banne ke baad reset karna
-
-    const password_hash = await bcrypt.hash(password, 10);
-
-    // 2) Insert admin user
-    const insertUser = db.prepare(`
-      INSERT INTO users (email, password_hash, role, created_at)
-      VALUES (?, ?, ?, ?)
-    `);
-
-    const userResult = insertUser.run(email, password_hash, 'admin', now);
-    const userId = userResult.lastInsertRowid;
-
-    // 3) Random public/secret keys
-    const publicKey = 'PUB_' + Math.random().toString(36).slice(2, 10);
-    const secretKey = 'SEC_' + Math.random().toString(36).slice(2, 10);
-
-    // 4) Insert client row for this admin
-    const insertClient = db.prepare(`
+    db.prepare(
+      `
       INSERT INTO clients (
         name,
         slug,
@@ -1491,41 +1144,740 @@ app.get('/dev/seed-admin', async (req, res) => {
         created_at
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    insertClient.run(
-      'Rahul Main Workspace',
-      'rahul-main',
-      userId,
+    `
+    ).run(
+      name,
+      slug,
+      user.id,
       publicKey,
       secretKey,
-      process.env.META_PIXEL_ID || null,
-      process.env.META_ACCESS_TOKEN || null,
-      'starter',
-      3,
+      default_pixel_id || null,
+      default_meta_token || null,
+      plan || null,
+      maxChannels,
       1,
       now
     );
+
+    return res.redirect('/panel');
+  } catch (err) {
+    console.error('❌ Error in POST /panel/new-client:', err);
+    return res.redirect('/panel?error=generic');
+  }
+});
+
+// GET /panel/client/:id
+app.get('/panel/client/:id', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    const clientId = parseInt(req.params.id, 10);
+    if (!clientId || Number.isNaN(clientId)) {
+      return res.status(400).send('Invalid client id');
+    }
+
+    const client = db
+      .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
+      .get(clientId, user.id);
+
+    if (!client) {
+      return res.status(404).send('Client not found');
+    }
+
+    const totalJoinsRow = db
+      .prepare(
+        `
+        SELECT COUNT(*) as cnt
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+      `
+      )
+      .get(clientId);
+    const totalJoins = totalJoinsRow?.cnt || 0;
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayTs = Math.floor(todayStart.getTime() / 1000);
+
+    const todayJoinsRow = db
+      .prepare(
+        `
+        SELECT COUNT(*) as cnt
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+          AND j.joined_at >= ?
+      `
+      )
+      .get(clientId, todayTs);
+    const todayJoins = todayJoinsRow?.cnt || 0;
+
+    const sevenDaysAgo = Math.floor(
+      (Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000
+    );
+    const rows7 = db
+      .prepare(
+        `
+        SELECT j.joined_at
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+          AND j.joined_at >= ?
+        ORDER BY j.joined_at ASC
+      `
+      )
+      .all(clientId, sevenDaysAgo);
+
+    const byDateMap = {};
+    for (const r of rows7) {
+      const dateKey = formatDateYYYYMMDD(r.joined_at);
+      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
+    }
+    const graphPoints = Object.keys(byDateMap)
+      .sort()
+      .map((d) => ({ date: d, count: byDateMap[d] }));
+
+    const channelConfigs = db
+      .prepare(
+        `
+        SELECT
+          id,
+          telegram_chat_id,
+          telegram_title,
+          deep_link,
+          pixel_id,
+          meta_token,
+          lp_url,
+          is_active,
+          created_at
+        FROM channels
+        WHERE client_id = ?
+        ORDER BY created_at DESC, id DESC
+      `
+      )
+      .all(clientId);
+
+    const recentJoins = db
+      .prepare(
+        `
+        SELECT
+          j.id,
+          j.telegram_username,
+          j.channel_title,
+          j.channel_id,
+          j.joined_at,
+          j.ip,
+          j.country,
+          j.user_agent,
+          j.device_type,
+          j.browser,
+          j.os,
+          j.source,
+          j.utm_source,
+          j.utm_medium,
+          j.utm_campaign,
+          j.utm_content,
+          j.utm_term
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
+        ORDER BY j.joined_at DESC
+        LIMIT 50
+      `
+      )
+      .all(clientId);
+
+    const channelTotalsRows = db
+      .prepare(
+        `
+        SELECT
+          ch.telegram_chat_id,
+          COUNT(j.id) as cnt
+        FROM channels ch
+        LEFT JOIN joins j ON j.channel_id = ch.telegram_chat_id
+        WHERE ch.client_id = ?
+        GROUP BY ch.telegram_chat_id
+      `
+      )
+      .all(clientId);
+    const channelTotalsMap = {};
+    for (const r of channelTotalsRows) {
+      channelTotalsMap[String(r.telegram_chat_id)] = r.cnt;
+    }
+
+    const trackerSnippet = `
+&lt;script&gt;
+  (function () {
+    function getCookie(name) {
+      const v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+      return v ? v[2] : null;
+    }
+
+    function detectSource() {
+      const ref = document.referrer || '';
+      if (!ref) return 'direct';
+      if (ref.indexOf('facebook.com') !== -1 || ref.indexOf('instagram.com') !== -1) return 'meta';
+      if (ref.indexOf('google.') !== -1) return 'google';
+      return 'other';
+    }
+
+    function getUtm(name) {
+      const p = new URLSearchParams(window.location.search);
+      return p.get(name) || null;
+    }
+
+    function sendPageview(channelId, clientId) {
+      const fbc = getCookie('_fbc');
+      const fbp = getCookie('_fbp');
+
+      const payload = {
+        channel_id: channelId,
+        client_id: clientId,
+        fbc: fbc || null,
+        fbp: fbp || null,
+        source: detectSource(),
+        utm_source: getUtm('utm_source'),
+        utm_medium: getUtm('utm_medium'),
+        utm_campaign: getUtm('utm_campaign'),
+        utm_content: getUtm('utm_content'),
+        utm_term: getUtm('utm_term')
+      };
+
+      fetch('/api/v1/track/pageview', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      }).catch(function (err) {
+        console.log('Track error:', err);
+      });
+    }
+
+    window.TelegramTracker = {
+      pageview: sendPageview
+    };
+  })();
+&lt;/script&gt;
+`.trim();
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Client Dashboard - ${client.name || ''}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #020617;
+            color: #e5e7eb;
+            padding: 20px;
+            margin: 0;
+          }
+          a {
+            color: #38bdf8;
+            text-decoration: none;
+            font-size: 13px;
+          }
+          .top-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+          }
+          .muted {
+            font-size: 12px;
+            color: #9ca3af;
+          }
+          .cards {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 16px;
+            margin-bottom: 16px;
+          }
+          .card {
+            border-radius: 12px;
+            border: 1px solid #1f2937;
+            padding: 12px 14px;
+            min-width: 150px;
+            background: radial-gradient(circle at top left, #0f172a 0, #020617 60%);
+          }
+          .card h2 {
+            font-size: 14px;
+            margin: 0 0 4px 0;
+          }
+          .card .value {
+            font-size: 20px;
+            font-weight: 600;
+          }
+          .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin: 16px 0 4px 0;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-top: 8px;
+          }
+          th, td {
+            border: 1px solid #1f2937;
+            padding: 6px 8px;
+            text-align: left;
+          }
+          th {
+            background: #020617;
+          }
+          tr:nth-child(even) {
+            background: #020617;
+          }
+          code {
+            font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 11px;
+          }
+          .pill {
+            display: inline-flex;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid #4b5563;
+            font-size: 11px;
+            align-items: center;
+            gap: 4px;
+          }
+          .pill-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 999px;
+            background: #22c55e;
+          }
+          .channels-form-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+          }
+          .field {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 180px;
+          }
+          .field label {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-bottom: 3px;
+          }
+          .field input {
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid #1f2937;
+            background: #020617;
+            color: #e5e7eb;
+            font-size: 12px;
+          }
+          .btn {
+            background: #22c55e;
+            border-radius: 999px;
+            color: #fff;
+            padding: 6px 12px;
+            border: none;
+            cursor: pointer;
+            font-size: 12px;
+            margin-top: 14px;
+            align-self: flex-start;
+          }
+          .grid-two {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr);
+            gap: 16px;
+            margin-top: 16px;
+          }
+          @media (max-width: 900px) {
+            .grid-two {
+              grid-template-columns: minmax(0, 1fr);
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="top-bar">
+          <div>
+            <a href="/panel">&larr; Back to panel</a>
+            <h1 style="margin-top:8px;">${client.name || 'Client'}</h1>
+            <div class="muted">
+              Slug: <code>${client.slug || ''}</code> · Plan: ${client.plan || ''} · Max channels: ${client.max_channels || ''}
+            </div>
+            <div class="muted">
+              Public key: <code>${client.public_key || ''}</code> · Secret key: <code>${client.secret_key || ''}</code>
+            </div>
+          </div>
+        </div>
+
+        <div class="cards">
+          <div class="card">
+            <h2>Total joins</h2>
+            <div class="value">${totalJoins}</div>
+          </div>
+          <div class="card">
+            <h2>Today joins</h2>
+            <div class="value">${todayJoins}</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">Landing page integration snippet</div>
+          <div class="muted">
+            Paste this script into your landing page. Replace <code>CHANNEL_ID_HERE</code> with the Telegram channel_id /
+            chat_id you configured below.
+          </div>
+          <pre style="margin-top:8px;background:#020617;border-radius:8px;border:1px solid #1f2937;padding:10px;font-size:11px;overflow-x:auto;">
+<code>${trackerSnippet}</code>
+          </pre>
+          <div class="muted" style="margin-top:4px;">
+            LP par call: <code>TelegramTracker.pageview('CHANNEL_ID_HERE', ${clientId});</code>
+          </div>
+        </div>
+
+        <div class="grid-two">
+          <div>
+            <h2 class="section-title">Manage channels</h2>
+            <div class="muted">
+              Yahan per client ke saare Telegram channels ka config rakhen (pixel, LP, deep link, Meta token).
+            </div>
+
+            <form method="POST" action="/panel/client/${clientId}/channels/new">
+          <div class="channels-form-row">
+            <div class="field">
+              <label for="telegram_title">Channel title</label>
+              <input id="telegram_title" name="telegram_title" type="text" placeholder="My Telegram Channel" />
+            </div>
+            <div class="field">
+              <label for="telegram_chat_id">Channel ID (chat_id)</label>
+              <input id="telegram_chat_id" name="telegram_chat_id" type="text" required placeholder="-1001234567890" />
+            </div>
+            <div class="field">
+              <label for="deep_link">Deep link (invite link)</label>
+              <input id="deep_link" name="deep_link" type="text" placeholder="https://t.me/+xxxx" />
+            </div>
+            <div class="field">
+              <label for="pixel_id">Pixel ID (optional)</label>
+              <input id="pixel_id" name="pixel_id" type="text" placeholder="Use client/default if empty" />
+            </div>
+            <div class="field">
+              <label for="meta_token">Meta Access Token (optional)</label>
+              <input id="meta_token" name="meta_token" type="text" placeholder="Per-channel CAPI token" />
+            </div>
+            <div class="field">
+              <label for="lp_url">Landing page URL (optional)</label>
+              <input id="lp_url" name="lp_url" type="text" placeholder="https://..." />
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button type="submit" class="btn">Save channel</button>
+            </div>
+          </div>
+        </form>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Channel ID</th>
+              <th>Deep link</th>
+              <th>Pixel ID</th>
+              <th>Meta token</th>
+              <th>LP URL</th>
+              <th>Status</th>
+              <th>Total joins</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              channelConfigs.length === 0
+                ? `<tr><td colspan="8" class="muted">No channel config yet</td></tr>`
+                : channelConfigs
+                    .map((ch) => {
+                      const created = ch.created_at
+                        ? new Date(ch.created_at * 1000).toISOString().substring(0, 10)
+                        : '';
+                      const status = ch.is_active ? 'Active' : 'Inactive';
+                      const tot = channelTotalsMap[String(ch.telegram_chat_id)] || 0;
+                      return `
+              <tr>
+                <td>${ch.telegram_title || '(no title)'}</td>
+                <td>${ch.telegram_chat_id}</td>
+                <td>${ch.deep_link || ''}</td>
+                <td>${ch.pixel_id || ''}</td>
+                <td>${ch.meta_token || ''}</td>
+                <td>${ch.lp_url || ''}</td>
+                <td>${status}</td>
+                <td>${tot}</td>
+                <td>${created}</td>
+              </tr>`;
+                    })
+                    .join('')
+            }
+          </tbody>
+        </table>
+          </div>
+
+          <div>
+            <h2 class="section-title">Recent joins</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Username</th>
+                  <th>Channel</th>
+                  <th>IP</th>
+                  <th>Country</th>
+                  <th>Device</th>
+                  <th>Browser</th>
+                  <th>OS</th>
+                  <th>Source</th>
+                  <th>UTM</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${
+                  recentJoins.length === 0
+                    ? '<tr><td colspan="10" class="muted">No joins yet</td></tr>'
+                    : recentJoins
+                        .map((j) => {
+                          const time = j.joined_at
+                            ? new Date(j.joined_at * 1000).toISOString().replace('T', ' ').substring(0, 16)
+                            : '';
+                          const utmParts = [
+                            j.utm_source ? 'src=' + j.utm_source : '',
+                            j.utm_medium ? 'med=' + j.utm_medium : '',
+                            j.utm_campaign ? 'cmp=' + j.utm_campaign : '',
+                            j.utm_content ? 'cnt=' + j.utm_content : '',
+                            j.utm_term ? 'term=' + j.utm_term : ''
+                          ].filter(Boolean);
+                          return `
+                  <tr>
+                    <td>${time}</td>
+                    <td>${j.telegram_username || ''}</td>
+                    <td>${j.channel_title || ''}</td>
+                    <td>${j.ip || ''}</td>
+                    <td>${j.country || ''}</td>
+                    <td>${j.device_type || ''}</td>
+                    <td>${j.browser || ''}</td>
+                    <td>${j.os || ''}</td>
+                    <td>${j.source || ''}</td>
+                    <td>${utmParts.join(', ')}</td>
+                  </tr>`;
+                        })
+                        .join('')
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error('❌ Error in GET /panel/client/:id:', err);
+    return res.status(500).send('Internal error');
+  }
+});
+
+// POST /panel/client/:id/channels/new
+app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    const clientId = parseInt(req.params.id, 10);
+    if (!clientId || Number.isNaN(clientId)) {
+      return res.status(400).send('Invalid client id');
+    }
+
+    const client = db
+      .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
+      .get(clientId, user.id);
+    if (!client) {
+      return res.status(404).send('Client not found');
+    }
+
+    let { telegram_chat_id, telegram_title, deep_link, pixel_id, meta_token, lp_url } = req.body || {};
+    telegram_chat_id = (telegram_chat_id || '').trim();
+    telegram_title = (telegram_title || '').trim();
+    deep_link = (deep_link || '').trim();
+    pixel_id = (pixel_id || '').trim();
+    meta_token = (meta_token || '').trim();
+    lp_url = (lp_url || '').trim();
+
+    if (!telegram_chat_id) {
+      return res.status(400).send('telegram_chat_id is required');
+    }
+
+    const nowTs = Math.floor(Date.now() / 1000);
+    const existing = db
+      .prepare('SELECT * FROM channels WHERE telegram_chat_id = ?')
+      .get(String(telegram_chat_id));
+
+    if (existing) {
+      db.prepare(
+        `
+        UPDATE channels
+        SET telegram_title = ?, deep_link = ?, pixel_id = ?, meta_token = ?, lp_url = ?, client_id = ?, is_active = 1
+        WHERE id = ?
+      `
+      ).run(
+        telegram_title || existing.telegram_title,
+        deep_link || existing.deep_link,
+        pixel_id || existing.pixel_id,
+        meta_token || existing.meta_token,
+        lp_url || existing.lp_url,
+        clientId,
+        existing.id
+      );
+    } else {
+      db.prepare(
+        `
+        INSERT INTO channels (
+          client_id,
+          telegram_chat_id,
+          telegram_title,
+          deep_link,
+          pixel_id,
+          meta_token,
+          lp_url,
+          created_at,
+          is_active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `
+      ).run(
+        clientId,
+        String(telegram_chat_id),
+        telegram_title || null,
+        deep_link || null,
+        pixel_id || DEFAULT_META_PIXEL_ID,
+        meta_token || null,
+        lp_url || DEFAULT_PUBLIC_LP_URL,
+        nowTs
+      );
+    }
+
+    return res.redirect('/panel/client/' + clientId);
+  } catch (err) {
+    console.error('❌ Error in POST /panel/client/:id/channels/new:', err);
+    return res.status(500).send('Internal error');
+  }
+});
+
+// DEV: Seed admin + default client
+app.get('/dev/seed-admin', async (req, res) => {
+  try {
+    const key = req.query.admin_secret || req.query.key;
+    if (key !== ADMIN_SECRET) {
+      return res.status(403).json({ ok: false, error: 'bad admin secret' });
+    }
+
+    const existingAdmin = db
+      .prepare("SELECT * FROM users WHERE email = 'admin@example.com'")
+      .get();
+    let adminUser;
+    if (!existingAdmin) {
+      const password = 'admin123';
+      const passwordHash = hashPassword(password);
+      db.prepare(
+        `
+        INSERT INTO users (email, password_hash, role)
+        VALUES (?, ?, 'admin')
+      `
+      ).run('admin@example.com', passwordHash);
+      adminUser = db
+        .prepare("SELECT * FROM users WHERE email = 'admin@example.com'")
+        .get();
+      console.log('✅ Seeded admin user: admin@example.com / admin123');
+    } else {
+      adminUser = existingAdmin;
+    }
+
+    const defaultClient = db
+      .prepare("SELECT * FROM clients WHERE email = 'default@example.com'")
+      .get();
+    let client;
+    if (!defaultClient) {
+      const now = Math.floor(Date.now() / 1000);
+      const name = 'Default Client (Seeded)';
+      const slug = 'default-client';
+      const apiKey = generateApiKey();
+      const publicKey = 'pub_' + crypto.randomBytes(12).toString('hex');
+      const secretKey = 'sec_' + crypto.randomBytes(16).toString('hex');
+      const defaultPixelId = DEFAULT_META_PIXEL_ID || null;
+      const defaultMetaToken = META_ACCESS_TOKEN || null;
+
+      db.prepare(
+        `
+        INSERT INTO clients (
+          name,
+          slug,
+          email,
+          api_key,
+          owner_user_id,
+          public_key,
+          secret_key,
+          default_pixel_id,
+          default_meta_token,
+          plan,
+          max_channels,
+          is_active,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+      ).run(
+        name,
+        slug,
+        'default@example.com',
+        apiKey,
+        adminUser.id,
+        publicKey,
+        secretKey,
+        defaultPixelId,
+        defaultMetaToken,
+        'starter',
+        10,
+        1,
+        now
+      );
+
+      client = db
+        .prepare("SELECT * FROM clients WHERE email = 'default@example.com'")
+        .get();
+      console.log('✅ Seeded default client for admin');
+    } else {
+      client = defaultClient;
+    }
 
     return res.json({
       ok: true,
       message: 'Admin + client + keys created ✅ (one-time)',
       admin_login: {
-        email,
-        password
+        email: 'admin@example.com',
+        password: 'admin123'
       },
       tracking_keys: {
-        public_key: publicKey,
-        secret_key: secretKey
+        public_key: client.public_key,
+        secret_key: client.secret_key
       }
     });
   } catch (err) {
     console.error('❌ Error in /dev/seed-admin:', err);
-    res.status(500).json({ ok: false, error: 'Internal error' });
+    return res.status(500).json({ ok: false, error: 'internal' });
   }
 });
 
-// ----- Start server -----
+// Root
+app.get('/', (req, res) => {
+  res.send('Telegram funnel tracker running');
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log('Server listening on', PORT);
 });
