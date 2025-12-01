@@ -31,8 +31,7 @@ db.exec(`
   );
 `);
 
-
-// --- CHANNELS (UPDATED WITH meta_token) ---
+// --- CHANNELS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,13 +40,12 @@ db.exec(`
     telegram_title TEXT,
     deep_link TEXT,
     pixel_id TEXT,
-    meta_token TEXT,          -- ⭐ NEW COLUMN
+    meta_token TEXT,
     lp_url TEXT,
     created_at INTEGER,
     is_active INTEGER DEFAULT 1
   );
 `);
-
 
 // --- JOINS ---
 db.exec(`
@@ -75,7 +73,6 @@ db.exec(`
   );
 `);
 
-
 // --- PRE LEADS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS pre_leads (
@@ -96,10 +93,9 @@ db.exec(`
     utm_content TEXT,
     utm_term TEXT,
     client_id INTEGER,
-    ts INTEGER
+    created_at INTEGER
   );
 `);
-
 
 // 🔧 AUTO-MIGRATION
 function ensureColumns(table, columns) {
@@ -115,8 +111,19 @@ function ensureColumns(table, columns) {
   }
 }
 
+// Channels me meta_token ensure karo
 ensureColumns("channels", [
   { name: "meta_token", type: "TEXT" }
+]);
+
+// pre_leads me created_at ensure karo (agar purana DB hai jisme ts tha)
+ensureColumns("pre_leads", [
+  { name: "created_at", type: "INTEGER" }
+]);
+
+// joins me client_id ensure karo (safety)
+ensureColumns("joins", [
+  { name: "client_id", type: "INTEGER" }
 ]);
 
 module.exports = db;
