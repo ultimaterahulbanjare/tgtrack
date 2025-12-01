@@ -535,7 +535,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       telegramChatId,
       chat.title || null,
       null,
-      null,
+      DEFAULT_META_PIXEL_ID,
       null,
       DEFAULT_PUBLIC_LP_URL,
       nowTs
@@ -547,7 +547,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       telegram_chat_id: telegramChatId,
       telegram_title: chat.title || null,
       deep_link: null,
-      pixel_id: null,
+      pixel_id: DEFAULT_META_PIXEL_ID,
       meta_token: null,
       lp_url: DEFAULT_PUBLIC_LP_URL,
       created_at: nowTs,
@@ -639,51 +639,41 @@ async function sendMetaLeadEvent(user, joinRequest) {
     eventTime
   );
 
+  const pixelId =
+    (channelConfig.pixel_id && channelConfig.pixel_id.trim()) || null;
   const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
 
-  // Pixel priority: channel.pixel_id > client.default_pixel_id > none (skip CAPI)
-  let clientForChannel = null;
-  if (channelConfig.client_id) {
-    try {
-      clientForChannel = db
-        .prepare('SELECT * FROM clients WHERE id = ?')
-        .get(channelConfig.client_id);
-    } catch (e) {
-      console.error(
-        '❌ Error fetching client for channel in sendMetaLeadEvent:',
-        e.message || e
-      );
-    }
-  }
-
-  const pixelId =
-    (channelConfig.pixel_id && channelConfig.pixel_id.trim()) ||
-    (clientForChannel &&
-      clientForChannel.default_pixel_id &&
-      clientForChannel.default_pixel_id.trim()) ||
-    null;
-
+  // Token strictly from channel meta_token; no client/global fallback.
   const tokenToUse =
-    (channelConfig.meta_token && channelConfig.meta_token.trim()) ||
-    (clientForChannel &&
-      clientForChannel.default_meta_token &&
-      clientForChannel.default_meta_token.trim()) ||
-    null;
+    (channelConfig.meta_token && channelConfig.meta_token.trim()) || null;
 
-  if (!pixelId || !tokenToUse) {
+  const hasPixel = !!pixelId;
+  const hasToken = !!tokenToUse;
+
+  let shouldSendCapi = false;
+
+  if (hasPixel && hasToken) {
+    // ✅ Pixel ID + Meta token: send CAPI + store in DB
+    shouldSendCapi = true;
+  } else if (hasPixel && !hasToken) {
+    // ❌ Pixel hai, token nahi → sirf DB store, CAPI skip
     console.log(
-      'ℹ️ Skipping CAPI send because pixel or token missing for this channel/client.',
-      {
-        channel_id: channelConfig.telegram_chat_id,
-        client_id: channelConfig.client_id,
-        pixelPresent: !!pixelId,
-        tokenPresent: !!tokenToUse
-      }
+      'ℹ️ Pixel ID is set but Meta access token is missing. Skipping CAPI send, only storing join in DB.'
+    );
+  } else if (!hasPixel && hasToken) {
+    // ❌ Token hai, lekin pixel nahi → Facebook CAPI me pixel mandatory hai
+    console.log(
+      'ℹ️ Meta access token is set but Pixel ID is missing. Cannot send CAPI without pixel. Only storing join in DB.'
+    );
+  } else {
+    // ❌ Dono missing → sirf DB
+    console.log(
+      'ℹ️ No Pixel ID or Meta access token configured for this channel. Only storing join in DB.'
     );
   }
 
   const url =
-    pixelId && tokenToUse
+    shouldSendCapi && pixelId && tokenToUse
       ? `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${tokenToUse}`
       : null;
 
@@ -756,7 +746,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
       );
     }
   } else {
-    console.log('ℹ️ CAPI URL null (missing pixel or token). Skipping HTTP call.');
+    console.log('ℹ️ CAPI URL null (no token). Skipping HTTP call.');
   }
 
   db.prepare(
@@ -1583,10 +1573,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <input id="meta_token" name="meta_token" type="text" placeholder="Per-channel CAPI token" />
             </div>
             <div class="field">
-              <label for="lp_url">Landing page URL (optional)</label>
-              <input id="lp_url" name="lp_url" type="text" placeholder="https://..." />
-            </div>
-            <div class="field">
               <label>&nbsp;</label>
               <button type="submit" class="btn">Save channel</button>
             </div>
@@ -1768,8 +1754,8 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         String(telegram_chat_id),
         telegram_title || null,
         deep_link || null,
-        pixel_id || client.default_pixel_id || null,
-        meta_token || client.default_meta_token || null,
+        pixel_id || null,
+        meta_token || null,
         lp_url || DEFAULT_PUBLIC_LP_URL,
         nowTs
       );
@@ -1822,8 +1808,8 @@ app.get('/dev/seed-admin', async (req, res) => {
       const apiKey = generateApiKey();
       const publicKey = 'pub_' + crypto.randomBytes(12).toString('hex');
       const secretKey = 'sec_' + crypto.randomBytes(16).toString('hex');
-      const defaultPixelId = null;
-      const defaultMetaToken = null;
+      const defaultPixelId = DEFAULT_META_PIXEL_ID || null;
+      const defaultMetaToken = META_ACCESS_TOKEN || null;
 
       db.prepare(
         `
