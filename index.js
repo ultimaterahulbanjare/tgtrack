@@ -567,6 +567,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
 
   return channel;
 }
+
 // ----- Helper: Meta CAPI Lead + DB insert -----
 // ----- Helper: Meta CAPI Lead + DB insert -----
 async function sendMetaLeadEvent(user, joinRequest) {
@@ -804,6 +805,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
 
   console.log('✅ Join stored in DB for user:', user.id);
 }
+
 // ----- ADMIN: update channel config (pixel, LP, client, deep link) -----
 app.post('/admin/update-channel', (req, res) => {
   try {
@@ -838,50 +840,6 @@ app.post('/admin/update-channel', (req, res) => {
 
     const newClientId = client_id ? parseInt(client_id, 10) : channel.client_id;
     const newPixelId = pixel_id || channel.pixel_id || null;
-    const newLpUrl = lp_url || channel.lp_url || DEFAULT_PUBLIC_LP_URL;
-    const newDeepLink = deep_link || channel.deep_link || null;
-
-    db.prepare(
-      `
-      UPDATE channels
-      SET client_id = ?, pixel_id = ?, lp_url = ?, deep_link = ?
-      WHERE id = ?
-    `
-    ).run(newClientId, newPixelId, newLpUrl, newDeepLink, channel.id);
-
-    console.log('✅ Updated channel config via /admin/update-channel:', {
-      telegram_chat_id,
-      newClientId,
-      newPixelId,
-      newLpUrl,
-      newDeepLink
-    });
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('❌ Error in /admin/update-channel:', err);
-    return res.status(500).json({ ok: false, error: 'internal' });
-  }
-});    }
-
-    if (!telegram_chat_id) {
-      return res
-        .status(400)
-        .json({ ok: false, error: 'telegram_chat_id is required' });
-    }
-
-    const channel = db
-      .prepare('SELECT * FROM channels WHERE telegram_chat_id = ?')
-      .get(String(telegram_chat_id));
-
-    if (!channel) {
-      return res
-        .status(404)
-        .json({ ok: false, error: 'channel config not found' });
-    }
-
-    const newClientId = client_id ? parseInt(client_id, 10) : channel.client_id;
-    const newPixelId = pixel_id || channel.pixel_id || DEFAULT_META_PIXEL_ID;
     const newLpUrl = lp_url || channel.lp_url || DEFAULT_PUBLIC_LP_URL;
     const newDeepLink = deep_link || channel.deep_link || null;
 
@@ -1756,15 +1714,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       return res.status(404).send('Client not found');
     }
 
-    let {
-      telegram_chat_id,
-      telegram_title,
-      deep_link,
-      pixel_id,
-      meta_token,
-      lp_url
-    } = req.body || {};
-
+    let { telegram_chat_id, telegram_title, deep_link, pixel_id, meta_token, lp_url } = req.body || {};
     telegram_chat_id = (telegram_chat_id || '').trim();
     telegram_title = (telegram_title || '').trim();
     deep_link = (deep_link || '').trim();
@@ -1831,4 +1781,115 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
   }
 });
 
-// DEV: seed admin user with admin@example.com
+// DEV: Seed admin + default client
+app.get('/dev/seed-admin', async (req, res) => {
+  try {
+    const key = req.query.admin_secret || req.query.key;
+    if (key !== ADMIN_SECRET) {
+      return res.status(403).json({ ok: false, error: 'bad admin secret' });
+    }
+
+    const existingAdmin = db
+      .prepare("SELECT * FROM users WHERE email = 'admin@example.com'")
+      .get();
+    let adminUser;
+    if (!existingAdmin) {
+      const password = 'admin123';
+      const passwordHash = hashPassword(password);
+      db.prepare(
+        `
+        INSERT INTO users (email, password_hash, role)
+        VALUES (?, ?, 'admin')
+      `
+      ).run('admin@example.com', passwordHash);
+      adminUser = db
+        .prepare("SELECT * FROM users WHERE email = 'admin@example.com'")
+        .get();
+      console.log('✅ Seeded admin user: admin@example.com / admin123');
+    } else {
+      adminUser = existingAdmin;
+    }
+
+    const defaultClient = db
+      .prepare("SELECT * FROM clients WHERE email = 'default@example.com'")
+      .get();
+    let client;
+    if (!defaultClient) {
+      const now = Math.floor(Date.now() / 1000);
+      const name = 'Default Client (Seeded)';
+      const slug = 'default-client';
+      const apiKey = generateApiKey();
+      const publicKey = 'pub_' + crypto.randomBytes(12).toString('hex');
+      const secretKey = 'sec_' + crypto.randomBytes(16).toString('hex');
+      const defaultPixelId = DEFAULT_META_PIXEL_ID || null;
+      const defaultMetaToken = META_ACCESS_TOKEN || null;
+
+      db.prepare(
+        `
+        INSERT INTO clients (
+          name,
+          slug,
+          email,
+          api_key,
+          owner_user_id,
+          public_key,
+          secret_key,
+          default_pixel_id,
+          default_meta_token,
+          plan,
+          max_channels,
+          is_active,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+      ).run(
+        name,
+        slug,
+        'default@example.com',
+        apiKey,
+        adminUser.id,
+        publicKey,
+        secretKey,
+        defaultPixelId,
+        defaultMetaToken,
+        'starter',
+        10,
+        1,
+        now
+      );
+
+      client = db
+        .prepare("SELECT * FROM clients WHERE email = 'default@example.com'")
+        .get();
+      console.log('✅ Seeded default client for admin');
+    } else {
+      client = defaultClient;
+    }
+
+    return res.json({
+      ok: true,
+      message: 'Admin + client + keys created ✅ (one-time)',
+      admin_login: {
+        email: 'admin@example.com',
+        password: 'admin123'
+      },
+      tracking_keys: {
+        public_key: client.public_key,
+        secret_key: client.secret_key
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in /dev/seed-admin:', err);
+    return res.status(500).json({ ok: false, error: 'internal' });
+  }
+});
+
+// Root
+app.get('/', (req, res) => {
+  res.send('Telegram funnel tracker running');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log('Server listening on', PORT);
+});
