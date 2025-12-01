@@ -567,6 +567,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
 
   return channel;
 }
+
 // ----- Helper: Meta CAPI Lead + DB insert -----
 async function sendMetaLeadEvent(user, joinRequest) {
   const eventTime = Math.floor(Date.now() / 1000);
@@ -640,7 +641,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
 
   const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
 
-  // Token + pixel priority resolution
+  // Pixel priority: channel.pixel_id > client.default_pixel_id > none (skip CAPI)
   let clientForChannel = null;
   if (channelConfig.client_id) {
     try {
@@ -660,29 +661,33 @@ async function sendMetaLeadEvent(user, joinRequest) {
     (clientForChannel &&
       clientForChannel.default_pixel_id &&
       clientForChannel.default_pixel_id.trim()) ||
-    null;  const tokenToUse =
-  (channelConfig.meta_token && channelConfig.meta_token.trim()) ||
-  (clientForChannel &&
-    clientForChannel.default_meta_token &&
-    clientForChannel.default_meta_token.trim()) ||
-  null;
+    null;
 
-if (!pixelId || !tokenToUse) {
-  console.log(
-    'ℹ️ Skipping CAPI send because pixel or token missing for this channel/client.',
-    {
-      channel_id: channelConfig.telegram_chat_id,
-      client_id: channelConfig.client_id,
-      pixelPresent: !!pixelId,
-      tokenPresent: !!tokenToUse
-    }
-  );
-}
+  const tokenToUse =
+    (channelConfig.meta_token && channelConfig.meta_token.trim()) ||
+    (clientForChannel &&
+      clientForChannel.default_meta_token &&
+      clientForChannel.default_meta_token.trim()) ||
+    null;
 
-const url =
-  pixelId && tokenToUse
-    ? `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${tokenToUse}`
-    : null;const externalIdHash = hashSha256(String(user.id));
+  if (!pixelId || !tokenToUse) {
+    console.log(
+      'ℹ️ Skipping CAPI send because pixel or token missing for this channel/client.',
+      {
+        channel_id: channelConfig.telegram_chat_id,
+        client_id: channelConfig.client_id,
+        pixelPresent: !!pixelId,
+        tokenPresent: !!tokenToUse
+      }
+    );
+  }
+
+  const url =
+    pixelId && tokenToUse
+      ? `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${tokenToUse}`
+      : null;
+
+  const externalIdHash = hashSha256(String(user.id));
   const eventId = generateEventId();
 
   const userData = {
@@ -751,7 +756,7 @@ const url =
       );
     }
   } else {
-    console.log('ℹ️ CAPI URL null (no token). Skipping HTTP call.');
+    console.log('ℹ️ CAPI URL null (missing pixel or token). Skipping HTTP call.');
   }
 
   db.prepare(
@@ -835,7 +840,7 @@ app.post('/admin/update-channel', (req, res) => {
     }
 
     const newClientId = client_id ? parseInt(client_id, 10) : channel.client_id;
-    const newPixelId = pixel_id || channel.pixel_id || null;
+    const newPixelId = pixel_id || channel.pixel_id || DEFAULT_META_PIXEL_ID;
     const newLpUrl = lp_url || channel.lp_url || DEFAULT_PUBLIC_LP_URL;
     const newDeepLink = deep_link || channel.deep_link || null;
 
@@ -1764,7 +1769,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         telegram_title || null,
         deep_link || null,
         pixel_id || client.default_pixel_id || null,
-        meta_token || null,
+        meta_token || client.default_meta_token || null,
         lp_url || DEFAULT_PUBLIC_LP_URL,
         nowTs
       );
