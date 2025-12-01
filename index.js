@@ -197,7 +197,7 @@ const insertJoinStmt = db.prepare(`
     utm_content,
     utm_term,
     client_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 // ----- AUTH MIDDLEWARE -----
@@ -535,7 +535,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       telegramChatId,
       chat.title || null,
       null,
-      null,
+      DEFAULT_META_PIXEL_ID,
       null,
       DEFAULT_PUBLIC_LP_URL,
       nowTs
@@ -547,7 +547,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       telegram_chat_id: telegramChatId,
       telegram_title: chat.title || null,
       deep_link: null,
-      pixel_id: null,
+      pixel_id: DEFAULT_META_PIXEL_ID,
       meta_token: null,
       lp_url: DEFAULT_PUBLIC_LP_URL,
       created_at: nowTs,
@@ -568,7 +568,6 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
   return channel;
 }
 
-// ----- Helper: Meta CAPI Lead + DB insert -----
 // ----- Helper: Meta CAPI Lead + DB insert -----
 async function sendMetaLeadEvent(user, joinRequest) {
   const eventTime = Math.floor(Date.now() / 1000);
@@ -634,11 +633,16 @@ async function sendMetaLeadEvent(user, joinRequest) {
     utmTermForThisLead
   });
 
+  // Channel config (pixel, LP, client)
   const channelConfig = getOrCreateChannelConfigFromJoin(
     joinRequest,
     eventTime
   );
 
+  const pixelId = channelConfig.pixel_id || DEFAULT_META_PIXEL_ID;
+  const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
+
+  // Token priority: channel.meta_token > client.default_meta_token > none (skip CAPI)
   let clientForChannel = null;
   if (channelConfig.client_id) {
     try {
@@ -653,13 +657,6 @@ async function sendMetaLeadEvent(user, joinRequest) {
     }
   }
 
-  const pixelId =
-    (channelConfig.pixel_id && channelConfig.pixel_id.trim()) ||
-    (clientForChannel &&
-      clientForChannel.default_pixel_id &&
-      clientForChannel.default_pixel_id.trim()) ||
-    null;
-
   const tokenToUse =
     (channelConfig.meta_token && channelConfig.meta_token.trim()) ||
     (clientForChannel &&
@@ -667,24 +664,15 @@ async function sendMetaLeadEvent(user, joinRequest) {
       clientForChannel.default_meta_token.trim()) ||
     null;
 
-  const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
-
-  if (!pixelId || !tokenToUse) {
+  if (!tokenToUse) {
     console.log(
-      'ℹ️ Skipping CAPI: pixelId or token missing for this channel/client',
-      {
-        channel_id: channelConfig.telegram_chat_id,
-        client_id: channelConfig.client_id,
-        pixelIdPresent: !!pixelId,
-        tokenPresent: !!tokenToUse
-      }
+      'ℹ️ No Meta token configured for this channel/client. Skipping CAPI send, only storing join.'
     );
   }
 
-  const url =
-    pixelId && tokenToUse
-      ? `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${tokenToUse}`
-      : null;
+  const url = tokenToUse
+    ? `https://graph.facebook.com/v18.0/${pixelId}/events?access_token=${tokenToUse}`
+    : null;
 
   const externalIdHash = hashSha256(String(user.id));
   const eventId = generateEventId();
@@ -755,7 +743,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
       );
     }
   } else {
-    console.log('ℹ️ CAPI URL null (missing pixel/token). Skipping HTTP call.');
+    console.log('ℹ️ CAPI URL null (no token). Skipping HTTP call.');
   }
 
   db.prepare(
@@ -839,7 +827,7 @@ app.post('/admin/update-channel', (req, res) => {
     }
 
     const newClientId = client_id ? parseInt(client_id, 10) : channel.client_id;
-    const newPixelId = pixel_id || channel.pixel_id || null;
+    const newPixelId = pixel_id || channel.pixel_id || DEFAULT_META_PIXEL_ID;
     const newLpUrl = lp_url || channel.lp_url || DEFAULT_PUBLIC_LP_URL;
     const newDeepLink = deep_link || channel.deep_link || null;
 
@@ -1767,8 +1755,8 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         String(telegram_chat_id),
         telegram_title || null,
         deep_link || null,
-        (pixel_id || client.default_pixel_id || null),
-        (meta_token || client.default_meta_token || null),
+        pixel_id || DEFAULT_META_PIXEL_ID,
+        meta_token || null,
         lp_url || DEFAULT_PUBLIC_LP_URL,
         nowTs
       );
