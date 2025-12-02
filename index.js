@@ -1826,6 +1826,52 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       channelTotalsMap[String(row.channel_id)] = row.total;
     }
 
+    // Per-channel today joins
+    const channelTodayRows = db
+      .prepare(
+        `
+        SELECT
+          ch.telegram_chat_id AS channel_id,
+          COUNT(j.id) AS cnt
+        FROM channels ch
+        LEFT JOIN joins j
+          ON j.channel_id = ch.telegram_chat_id
+          AND j.joined_at >= ?
+          AND j.joined_at <= ?
+        WHERE ch.client_id = ?
+        GROUP BY ch.telegram_chat_id
+      `
+      )
+      .all(startOfDayTs, now, clientId);
+
+    const channelTodayMap = {};
+    for (const r of channelTodayRows) {
+      channelTodayMap[String(r.channel_id)] = r.cnt || 0;
+    }
+
+    // Per-channel last 7 days joins
+    const channel7dRows = db
+      .prepare(
+        `
+        SELECT
+          ch.telegram_chat_id AS channel_id,
+          COUNT(j.id) AS cnt
+        FROM channels ch
+        LEFT JOIN joins j
+          ON j.channel_id = ch.telegram_chat_id
+          AND j.joined_at >= ?
+        WHERE ch.client_id = ?
+        GROUP BY ch.telegram_chat_id
+      `
+      )
+      .all(sevenDaysAgoTs, clientId);
+
+    const channel7dMap = {};
+    for (const r of channel7dRows) {
+      channel7dMap[String(r.channel_id)] = r.cnt || 0;
+    }
+
+
     // Channel configs for this client
     const channelConfigs = db
       .prepare(
@@ -2146,6 +2192,8 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <th>LP URL</th>
               <th>Status</th>
               <th>Total joins</th>
+              <th>Today</th>
+              <th>Last 7 days</th>
               <th>Created</th>
             </tr>
           </thead>
@@ -2160,6 +2208,8 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                         : '';
                       const status = ch.is_active ? 'Active' : 'Inactive';
                       const tot = channelTotalsMap[String(ch.telegram_chat_id)] || 0;
+                      const todayCount = channelTodayMap[String(ch.telegram_chat_id)] || 0;
+                      const last7Count = channel7dMap[String(ch.telegram_chat_id)] || 0;
                       return `
               <tr>
                 <td>${ch.telegram_title || '(no title)'}</td>
@@ -2169,6 +2219,8 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                 <td>${ch.lp_url || ''}</td>
                 <td>${status}</td>
                 <td>${tot}</td>
+                <td>${todayCount}</td>
+                <td>${last7Count}</td>
                 <td>${created}</td>
               </tr>`;
                     })
