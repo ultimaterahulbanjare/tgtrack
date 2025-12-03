@@ -476,7 +476,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       chat.title || null,
       null, // deep_link abhi null
       DEFAULT_META_PIXEL_ID,
-      DEFAULT_PUBLIC_LP_URL,
+      null,
       nowTs
     );
 
@@ -487,7 +487,7 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       telegram_title: chat.title || null,
       deep_link: null,
       pixel_id: DEFAULT_META_PIXEL_ID,
-      lp_url: DEFAULT_PUBLIC_LP_URL,
+      lp_url: null,
       created_at: nowTs,
       is_active: 1,
     };
@@ -579,7 +579,7 @@ async function sendMetaLeadEvent(user, joinRequest) {
     eventTime
   );
 
-  const lpUrl = channelConfig.lp_url || DEFAULT_PUBLIC_LP_URL;
+  const lpUrl = channelConfig.lp_url || null;
 
   // Pixel & Meta access token strictly from channel config.
   // No default pixel or token should be applied if user didn't provide them.
@@ -2037,6 +2037,16 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             cursor: pointer;
             font-size: 12px;
           }
+          .btn-xs {
+            padding: 3px 8px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: #022c22;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 11px;
+          }
           @media (max-width: 900px) {
             table {
               display: block;
@@ -2176,6 +2186,10 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <input id="meta_token" name="meta_token" type="text" placeholder="Leave empty if not used" />
             </div>
             <div class="field">
+              <label for="lp_url">Custom LP URL (optional)</label>
+              <input id="lp_url" name="lp_url" type="text" placeholder="https://your-landing-page.com" />
+            </div>
+            <div class="field">
               <label>&nbsp;</label>
               <button type="submit" class="btn">Save channel</button>
             </div>
@@ -2189,7 +2203,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <th>Channel ID</th>
               <th>Deep link</th>
               <th>Pixel ID</th>
-              <th>LP URL</th>
+              <th>LP</th>
               <th>Status</th>
               <th>Total joins</th>
               <th>Today</th>
@@ -2210,13 +2224,28 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                       const tot = channelTotalsMap[String(ch.telegram_chat_id)] || 0;
                       const todayCount = channelTodayMap[String(ch.telegram_chat_id)] || 0;
                       const last7Count = channel7dMap[String(ch.telegram_chat_id)] || 0;
+                      const autoLpUrl = `/lp/${ch.id}`;
+                      const customLp = ch.lp_url || '';
+                      const customDisplay = customLp
+                        ? `<a href="${customLp}" target="_blank">${customLp}</a>`
+                        : 'Not set';
                       return `
               <tr>
                 <td>${ch.telegram_title || '(no title)'}</td>
                 <td>${ch.telegram_chat_id}</td>
                 <td>${ch.deep_link || ''}</td>
                 <td>${ch.pixel_id || ''}</td>
-                <td>${ch.lp_url || ''}</td>
+                <td>
+                  <div style="display:flex;flex-direction:column;gap:4px;">
+                    <div>
+                      <span style="font-size:11px;color:#9ca3af;margin-right:6px;">Auto LP</span>
+                      <a href="${autoLpUrl}" target="_blank" class="btn btn-xs">Open</a>
+                    </div>
+                    <div style="font-size:11px;color:#9ca3af;">
+                      Custom: ${customDisplay}
+                    </div>
+                  </div>
+                </td>
                 <td>${status}</td>
                 <td>${tot}</td>
                 <td>${todayCount}</td>
@@ -2358,7 +2387,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         deep_link || null,
         pixel_id || null,
         meta_token || null,
-        lp_url || DEFAULT_PUBLIC_LP_URL,
+        lp_url || null,
         nowTs
       );
     }
