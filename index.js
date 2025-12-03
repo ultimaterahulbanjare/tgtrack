@@ -1826,6 +1826,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       channelTotalsMap[String(row.channel_id)] = row.total;
     }
 
+
     // Per-channel today joins
     const channelTodayRows = db
       .prepare(
@@ -1870,7 +1871,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     for (const r of channel7dRows) {
       channel7dMap[String(r.channel_id)] = r.cnt || 0;
     }
-
 
     // Channel configs for this client
     const channelConfigs = db
@@ -2458,6 +2458,300 @@ app.get('/dev/seed-admin', async (req, res) => {
   } catch (err) {
     console.error('❌ Error in /dev/seed-admin:', err);
     res.status(500).json({ ok: false, error: 'Internal error' });
+  }
+});
+
+// ----- Auto-generated landing page for a channel -----
+// Simple LP generator: /lp/:channelId (channelId = channels.id)
+app.get('/lp/:channelId', async (req, res) => {
+  try {
+    const channelId = parseInt(req.params.channelId, 10);
+    if (!channelId || Number.isNaN(channelId)) {
+      return res.status(400).send('Invalid channel id');
+    }
+
+    const row = db
+      .prepare(
+        `
+        SELECT
+          ch.id,
+          ch.telegram_chat_id,
+          ch.telegram_title,
+          ch.deep_link,
+          ch.pixel_id,
+          c.public_key,
+          c.name AS client_name
+        FROM channels ch
+        JOIN clients c ON c.id = ch.client_id
+        WHERE ch.id = ?
+      `
+      )
+      .get(channelId);
+
+    if (!row) {
+      return res.status(404).send('Channel not found');
+    }
+
+    const pixelId = row.pixel_id || '';
+    const deepLink = row.deep_link || `https://t.me/${row.telegram_chat_id}`;
+    const channelTitle = row.telegram_title || 'My Telegram Channel';
+    const clientName = row.client_name || 'Our Team';
+    const publicKey = row.public_key || '';
+    const telegramChatId = String(row.telegram_chat_id || '');
+
+    const pixelBlock = pixelId
+      ? `
+    <!-- Meta Pixel Code -->
+    <script>
+      !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+      n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+      n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+      t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}
+      (window, document,'script','https://connect.facebook.net/en_US/fbevents.js');
+      fbq('init', '${pixelId}');
+      fbq('track', 'PageView');
+    </script>
+    <noscript>
+      <img height="1" width="1" style="display:none"
+           src="https://www.facebook.com/tr?id=${pixelId}&ev=PageView&noscript=1"/>
+    </noscript>
+    <!-- End Meta Pixel Code -->
+    `
+      : '';
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>${channelTitle} | Telegram Channel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top left, #0f172a, #020617);
+        color: #e5e7eb;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.96);
+        border-radius: 18px;
+        padding: 22px 20px;
+        max-width: 430px;
+        width: 100%;
+        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.6);
+        border: 1px solid rgba(148, 163, 184, 0.15);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(22, 163, 74, 0.12);
+        color: #bbf7d0;
+        margin-bottom: 10px;
+      }
+      .badge-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: #22c55e;
+      }
+      h1 {
+        font-size: 22px;
+        line-height: 1.25;
+        margin-bottom: 6px;
+      }
+      .subtitle {
+        font-size: 13px;
+        color: #9ca3af;
+        margin-bottom: 14px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        padding: 4px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        margin-right: 6px;
+        margin-bottom: 6px;
+      }
+      .pill-emoji {
+        font-size: 13px;
+      }
+      ul {
+        list-style: none;
+        margin: 12px 0 16px 0;
+      }
+      li {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        font-size: 13px;
+        margin-bottom: 6px;
+      }
+      li span.bullet {
+        font-size: 14px;
+        margin-top: 1px;
+      }
+      .cta-box {
+        margin-top: 16px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px dashed rgba(148, 163, 184, 0.3);
+        font-size: 11px;
+        color: #9ca3af;
+      }
+      .cta-btn {
+        margin-top: 14px;
+        width: 100%;
+        border: none;
+        outline: none;
+        cursor: pointer;
+        border-radius: 999px;
+        padding: 11px 16px;
+        font-size: 14px;
+        font-weight: 600;
+        background: linear-gradient(90deg, #22c55e, #16a34a);
+        color: #022c22;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        box-shadow: 0 12px 30px rgba(34, 197, 94, 0.35);
+        transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+      }
+      .cta-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 18px 40px rgba(34, 197, 94, 0.45);
+        filter: brightness(1.03);
+      }
+      .cta-btn:active {
+        transform: translateY(0);
+        box-shadow: 0 8px 20px rgba(34, 197, 94, 0.35);
+      }
+      .cta-btn-icon {
+        font-size: 16px;
+      }
+      .footer {
+        margin-top: 10px;
+        font-size: 10px;
+        color: #6b7280;
+        text-align: center;
+      }
+    </style>
+    ${pixelBlock}
+  </head>
+  <body>
+    <div class="card">
+      <div class="badge">
+        <span class="badge-dot"></span>
+        <span>Official Telegram Channel</span>
+      </div>
+      <h1>${channelTitle}</h1>
+      <div class="subtitle">
+        Curated updates & insights by <strong>${clientName}</strong>. Join the channel to get instant alerts directly on Telegram.
+      </div>
+
+      <div>
+        <div class="pill">
+          <span class="pill-emoji">⚡</span>
+          <span>Instant Telegram alerts</span>
+        </div>
+        <div class="pill">
+          <span class="pill-emoji">🔔</span>
+          <span>No spam, only signals</span>
+        </div>
+        <div class="pill">
+          <span class="pill-emoji">🎯</span>
+          <span>Hand-picked insights</span>
+        </div>
+      </div>
+
+      <ul>
+        <li>
+          <span class="bullet">✅</span>
+          <span>Get real-time updates before everyone else.</span>
+        </li>
+        <li>
+          <span class="bullet">📊</span>
+          <span>Short, actionable messages — no long reading.</span>
+        </li>
+        <li>
+          <span class="bullet">🧠</span>
+          <span>Learn the thought process behind every update.</span>
+        </li>
+      </ul>
+
+      <div class="cta-box">
+        Tap the button below and send a join request on Telegram. Our system will auto-approve you within a few seconds.
+      </div>
+
+      <button class="cta-btn" onclick="handleJoinClick(event)">
+        <span class="cta-btn-icon">📲</span>
+        <span>Join Telegram Channel</span>
+      </button>
+
+      <div class="footer">
+        Powered by your private tracking workspace. Channel ID: ${telegramChatId}
+      </div>
+    </div>
+
+    <script>
+      const UTS_PUBLIC_KEY = "${publicKey}";
+      const UTS_CHANNEL_ID = "${telegramChatId}";
+
+      async function handleJoinClick(e) {
+        if (e && e.preventDefault) e.preventDefault();
+
+        try {
+          await fetch("/api/v1/track/pre-lead", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              public_key: UTS_PUBLIC_KEY,
+              channel_id: UTS_CHANNEL_ID,
+              url: window.location.href,
+              user_agent: navigator.userAgent,
+              source: "lp_auto"
+            })
+          });
+        } catch (err) {
+          console.error("pre-lead tracking failed", err);
+        }
+
+        try {
+          if (window.fbq) {
+            fbq('track', 'Lead');
+          }
+        } catch (err) {
+          console.error('fbq error', err);
+        }
+
+        window.location.href = "${deepLink}";
+      }
+    </script>
+  </body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (err) {
+    console.error('❌ Error in GET /lp/:channelId:', err);
+    res.status(500).send('Internal error');
   }
 });
 
