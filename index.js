@@ -1344,6 +1344,27 @@ app.post('/login', async (req, res) => {
       // secure: true // HTTPS only
     });
 
+    // Role-based redirect:
+    // - admin/owner: go to /panel (multi-client view)
+    // - client: go directly to its own workspace
+    if (user.role === 'admin' || user.role === 'owner') {
+      return res.redirect('/panel');
+    }
+
+    if (user.role === 'client') {
+      const clientRow = db
+        .prepare('SELECT id FROM clients WHERE login_user_id = ?')
+        .get(user.id);
+
+      if (clientRow && clientRow.id) {
+        return res.redirect('/panel/client/' + clientRow.id);
+      }
+
+      // Fallback if mapping missing
+      return res.redirect('/panel');
+    }
+
+    // Default fallback
     return res.redirect('/panel');
   } catch (err) {
     console.error('❌ Error in POST /login:', err);
@@ -1361,6 +1382,19 @@ app.get('/logout', (req, res) => {
 app.get('/panel', requireAuth, (req, res) => {
   try {
     const user = req.user;
+    // If this is a direct client login, redirect them to their own workspace
+    if (user.role === 'client') {
+      const clientRow = db
+        .prepare('SELECT id FROM clients WHERE login_user_id = ?')
+        .get(user.id);
+
+      if (clientRow && clientRow.id) {
+        return res.redirect('/panel/client/' + clientRow.id);
+      }
+
+      return res.status(403).send('Client not assigned to any workspace');
+    }
+
 
     const errorCode = req.query.error || '';
     let errorHtml = '';
@@ -1737,10 +1771,21 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       return res.status(400).send('Invalid client id');
     }
 
-    // Ensure client belongs to this user
-    const client = db
-      .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
-      .get(clientId, user.id);
+    // Ensure client belongs to this user:
+    // - admin/owner: owner_user_id match
+    // - client: login_user_id match
+    let client = null;
+    if (user.role === 'admin' || user.role === 'owner') {
+      client = db
+        .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
+        .get(clientId, user.id);
+    } else if (user.role === 'client') {
+      client = db
+        .prepare('SELECT * FROM clients WHERE id = ? AND login_user_id = ?')
+        .get(clientId, user.id);
+    } else {
+      return res.status(403).send('Forbidden');
+    }
 
     if (!client) {
       return res.status(404).send('Client not found');
@@ -2325,9 +2370,22 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       return res.status(400).send('Invalid client id');
     }
 
-    const client = db
-      .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
-      .get(clientId, user.id);
+    // Ensure client belongs to this user:
+    // - admin/owner: owner_user_id match
+    // - client: login_user_id match
+    let client = null;
+    if (user.role === 'admin' || user.role === 'owner') {
+      client = db
+        .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
+        .get(clientId, user.id);
+    } else if (user.role === 'client') {
+      client = db
+        .prepare('SELECT * FROM clients WHERE id = ? AND login_user_id = ?')
+        .get(clientId, user.id);
+    } else {
+      return res.status(403).send('Forbidden');
+    }
+
     if (!client) {
       return res.status(404).send('Client not found');
     }

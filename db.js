@@ -1,35 +1,37 @@
 const Database = require('better-sqlite3');
 
-// DB file ka naam (ye hi file me sab data store hoga)
+// DB file ka naam
 const db = new Database('telegram_funnel.db');
 
-/**
- * NEW: Users table (login / roles)
- * Abhi sirf schema बना रहे हैं, koi auto-user insert nahi kar rahe.
- * Baad me hum /auth/register ya seed script se user bana sakte hain.
- */
+// --- USERS TABLE ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'client', -- 'admin' | 'client'
-    created_at INTEGER NOT NULL
+    role TEXT NOT NULL DEFAULT 'client'
   );
 `);
 
-// --- Table: clients (future SaaS users / agencies) ---
+// --- CLIENTS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
-    email TEXT,
-    api_key TEXT,
+    slug TEXT,
+    owner_user_id INTEGER,
+    public_key TEXT,
+    secret_key TEXT,
+    default_pixel_id TEXT,
+    default_meta_token TEXT,
+    plan TEXT,
+    max_channels INTEGER,
+    is_active INTEGER DEFAULT 1,
     created_at INTEGER
   );
 `);
 
-// --- Table: channels (har Telegram channel ki config) ---
+// --- CHANNELS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,19 +40,14 @@ db.exec(`
     telegram_title TEXT,
     deep_link TEXT,
     pixel_id TEXT,
+    meta_token TEXT,
     lp_url TEXT,
     created_at INTEGER,
     is_active INTEGER DEFAULT 1
   );
 `);
 
-// 🔹 channels ke liye ensure karo ke meta_token column hamesha ho
-ensureColumns('channels', [
-  { name: 'meta_token', type: 'TEXT' }
-]);
-
-
-// --- Table: joins log ---
+// --- JOINS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS joins (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,15 +68,16 @@ db.exec(`
     utm_medium TEXT,
     utm_campaign TEXT,
     utm_content TEXT,
-    utm_term TEXT
+    utm_term TEXT,
+    client_id INTEGER
   );
 `);
 
-// --- Table: pre_leads (LP JOIN click + tracking data) ---
+// --- PRE LEADS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS pre_leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel_id TEXT NOT NULL,
+    channel_id TEXT,
     fbc TEXT,
     fbp TEXT,
     ip TEXT,
@@ -94,92 +92,51 @@ db.exec(`
     utm_campaign TEXT,
     utm_content TEXT,
     utm_term TEXT,
-    created_at INTEGER NOT NULL,
-    used INTEGER NOT NULL DEFAULT 0
+    client_id INTEGER,
+    created_at INTEGER
   );
 `);
 
-// 🔹 Safe migration helpers
-function ensureColumns(tableName, columns) {
-  try {
-    const cols = db.prepare(`PRAGMA table_info(${tableName})`).all();
-    const existing = new Set(cols.map(c => c.name));
+// 🔧 AUTO-MIGRATION
+function ensureColumns(table, columns) {
+  const existing = new Set(
+    db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)
+  );
 
-    for (const col of columns) {
-      if (!existing.has(col.name)) {
-        const sql = `ALTER TABLE ${tableName} ADD COLUMN ${col.name} ${col.type};`;
-        db.exec(sql);
-        console.log(`✅ Added column ${col.name} to ${tableName}`);
-      }
+  for (const col of columns) {
+    if (!existing.has(col.name)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col.name} ${col.type};`);
+      console.log(`Added column ${col.name} to ${table}`);
     }
-  } catch (e) {
-    console.log(`ℹ️ ${tableName} migration check error:`, e.message);
   }
 }
 
-/**
- * 🔹 SaaS upgrade: clients table ko multi-tenant ready bana rahe hain
- * (Ye columns ALTER TABLE se add ho jayenge agar missing hue)
- */
-ensureColumns('clients', [
-  { name: 'slug', type: 'TEXT' },               // e.g. "veerbhai-agency"
-  { name: 'owner_user_id', type: 'INTEGER' },   // FK -> users.id
-  { name: 'public_key', type: 'TEXT' },         // LP tracking ke liye
-  { name: 'secret_key', type: 'TEXT' },         // Bot/backend ke liye
-  { name: 'default_pixel_id', type: 'TEXT' },   // per client default Pixel
-  { name: 'default_meta_token', type: 'TEXT' }, // per client CAPI token
-  { name: 'plan', type: 'TEXT' },               // 'starter' | 'pro' | ...
-  { name: 'max_channels', type: 'INTEGER' },    // plan limit
-  { name: 'is_active', type: 'INTEGER' }        // 1/0
+
+// Users me role + is_active + created_at ensure karo
+ensureColumns("users", [
+  { name: "role", type: "TEXT" },
+  { name: "is_active", type: "INTEGER" },
+  { name: "created_at", type: "INTEGER" }
 ]);
 
-// 🔹 pre_leads ke liye ensure karo ke sab nayi tracking + client columns ho
-ensureColumns('pre_leads', [
-  { name: 'fbp', type: 'TEXT' },        // agar purane version me missing ho
-  { name: 'ip', type: 'TEXT' },
-  { name: 'country', type: 'TEXT' },
-  { name: 'user_agent', type: 'TEXT' },
-  { name: 'device_type', type: 'TEXT' },
-  { name: 'browser', type: 'TEXT' },
-  { name: 'os', type: 'TEXT' },
-  { name: 'source', type: 'TEXT' },
-  { name: 'utm_source', type: 'TEXT' },
-  { name: 'utm_medium', type: 'TEXT' },
-  { name: 'utm_campaign', type: 'TEXT' },
-  { name: 'utm_content', type: 'TEXT' },
-  { name: 'utm_term', type: 'TEXT' },
-  // NEW: multi-tenant ke liye
-  { name: 'client_id', type: 'INTEGER' }  // kis client ki LP se aaya
+// Clients me login_user_id ensure karo
+ensureColumns("clients", [
+  { name: "login_user_id", type: "INTEGER" }
 ]);
 
-// 🔹 joins ke liye bhi ensure karo ke sab nayi tracking + client columns ho
-ensureColumns('joins', [
-  { name: 'ip', type: 'TEXT' },
-  { name: 'country', type: 'TEXT' },
-  { name: 'user_agent', type: 'TEXT' },
-  { name: 'device_type', type: 'TEXT' },
-  { name: 'browser', type: 'TEXT' },
-  { name: 'os', type: 'TEXT' },
-  { name: 'source', type: 'TEXT' },
-  { name: 'utm_source', type: 'TEXT' },
-  { name: 'utm_medium', type: 'TEXT' },
-  { name: 'utm_campaign', type: 'TEXT' },
-  { name: 'utm_content', type: 'TEXT' },
-  { name: 'utm_term', type: 'TEXT' },
-  // NEW: multi-tenant ke liye
-  { name: 'client_id', type: 'INTEGER' }  // kis client ke channel ka join
+// Channels me meta_token ensure karo
+ensureColumns("channels", [
+  { name: "meta_token", type: "TEXT" }
 ]);
 
-// --- Ensure ek default client row ho always (id=1) ---
-const defaultClient = db.prepare(`SELECT id FROM clients WHERE id = 1`).get();
-if (!defaultClient) {
-  const now = Math.floor(Date.now() / 1000);
-  db.prepare(`
-    INSERT INTO clients (id, name, email, api_key, created_at)
-    VALUES (1, 'Default Client', 'default@example.com', 'DEFAULT_KEY', ?)
-  `).run(now);
+// pre_leads me created_at ensure karo (agar purana DB hai jisme ts tha)
+ensureColumns("pre_leads", [
+  { name: "created_at", type: "INTEGER" }
+]);
 
-  console.log("✅ Default client created (id=1)");
-}
+// joins me client_id ensure karo (safety)
+ensureColumns("joins", [
+  { name: "client_id", type: "INTEGER" }
+]);
 
 module.exports = db;
