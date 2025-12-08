@@ -1795,13 +1795,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       return res.status(404).send('Client not found');
     }
 
-    const errorCode = req.query.error || '';
-    let errorMessage = '';
-    if (errorCode === 'chlimit') {
-      errorMessage =
-        'Channel limit reached for your plan. Please upgrade your plan or deactivate an existing channel.';
-    }
-
     const now = Math.floor(Date.now() / 1000);
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -1856,6 +1849,12 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     const last7Days = Object.keys(byDateMap)
       .sort()
       .map((date) => ({ date, count: byDateMap[date] }));
+
+    const errorCode = req.query.error || '';
+    let errorHtml = '';
+    if (errorCode === 'chlimit') {
+      errorHtml = '<div style="margin-top:8px;color:#f97373;font-size:12px;">Channel limit reached for this plan. Please remove an existing channel or upgrade the plan.</div>';
+    }
 
     // By channel stats (from joins)
     const byChannelStats = db
@@ -2103,16 +2102,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             cursor: pointer;
             font-size: 11px;
           }
-          .error-banner {
-            margin: 12px 0;
-            padding: 10px 12px;
-            border-radius: 10px;
-            border: 1px solid #ef4444;
-            background: rgba(248, 113, 113, 0.1);
-            color: #fecaca;
-            font-size: 13px;
-          }
-
           @media (max-width: 900px) {
             table {
               display: block;
@@ -2136,14 +2125,9 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             <div class="muted">
               Public key: <code>${client.public_key || ''}</code> · Secret key: <code>${client.secret_key || ''}</code>
             </div>
+            ${errorHtml}
           </div>
         </div>
-
-        ${
-          errorMessage
-            ? `<div class="error-banner">${errorMessage}</div>`
-            : ''
-        }
 
         <div class="cards">
           <div class="card">
@@ -2434,29 +2418,6 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       .prepare('SELECT * FROM channels WHERE telegram_chat_id = ?')
       .get(String(telegram_chat_id));
 
-    // Enforce channel limit per client plan
-    const currentCountRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM channels WHERE client_id = ? AND is_active = 1')
-      .get(clientId);
-    const currentCount = currentCountRow ? currentCountRow.cnt || 0 : 0;
-    const allowedMax =
-      (client.max_channels && Number(client.max_channels)) ||
-      getMaxChannelsForPlan(client.plan) ||
-      1;
-
-    const isNewForThisClient = !existing || existing.client_id !== clientId;
-    if (isNewForThisClient && currentCount >= allowedMax) {
-      console.warn(
-        'Channel limit reached for client',
-        clientId,
-        'currentCount=',
-        currentCount,
-        'allowedMax=',
-        allowedMax
-      );
-      return res.redirect('/panel/client/' + clientId + '?error=chlimit');
-    }
-
     if (existing) {
       db.prepare(
         `
@@ -2474,6 +2435,26 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         existing.id
       );
     } else {
+      // Enforce plan-based channel limit for this client (only when inserting new channel)
+      let maxChannels = client.max_channels;
+      if (!maxChannels || Number.isNaN(Number(maxChannels))) {
+        const plan = (client.plan || '').toLowerCase();
+        if (plan === 'single') maxChannels = 1;
+        else if (plan === 'starter') maxChannels = 3;
+        else if (plan === 'pro') maxChannels = 5;
+        else if (plan === 'agency') maxChannels = 10;
+      }
+
+      if (maxChannels && Number(maxChannels) > 0) {
+        const rowCount = db
+          .prepare('SELECT COUNT(*) AS cnt FROM channels WHERE client_id = ? AND is_active = 1')
+          .get(clientId);
+        const currentActive = rowCount && rowCount.cnt ? rowCount.cnt : 0;
+        if (currentActive >= Number(maxChannels)) {
+          return res.redirect('/panel/client/' + clientId + '?error=chlimit');
+        }
+      }
+
       db.prepare(
         `
         INSERT INTO channels (
