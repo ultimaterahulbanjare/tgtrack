@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- Meta Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s)
+{if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];
+s.parentNode.insertBefore(t,s)}(window, document,'script',
+'https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '1430358881781923');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1430358881781923&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Meta Pixel Code -->
+
+  <meta charset="UTF-8" />
+  <title>Clean Cricket Community</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #0f172a, #020617);
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .card {
+      background: linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(8, 47, 73, 0.96));
+      border-radius: 24px;
+      padding: 24px 20px 20px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 22px 45px rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .glow {
+      position: absolute;
+      inset: -40%;
+      background: radial-gradient(circle at 10% 0%, rgba(59, 130, 246, 0.2), transparent 55%),
+                  radial-gradient(circle at 90% 0%, rgba(236, 72, 153, 0.18), transparent 55%);
+      opacity: 0.9;
+      pointer-events: none;
+    }
+
+    .card-inner {
+      position: relative;
+      z-index: 1;
+    }
+
+    .avatar-wrap {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 16px;
+    }
+
+    .avatar {
+      width: 84px;
+      height: 84px;
+      border-radius: 999px;
+      background: radial-gradient(circle at 30% 20%, #22c55e, #16a34a);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 25px rgba(22, 163, 74, 0.8);
+      border: 3px solid rgba(15, 23, 42, 0.8);
+    }
+
+    .avatar span {
+      font-size: 40px;
+    }
+
+    .title {
+      text-align: center;
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      text-align: center;
+      font-size: 14px;
+      color: #9ca3af;
+      margin-bottom: 18px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.2);
+      border: 1px solid rgba(34, 197, 94, 0.4);
+      color: #bbf7d0;
+      margin: 0 auto 16px;
+    }
+
+    .pill span {
+      font-size: 14px;
+    }
+
+    .features {
+      list-style: none;
+      margin-bottom: 18px;
+    }
+
+    .features li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      padding: 6px 0;
+      color: #e5e7eb;
+    }
+
+    .features li span.icon {
+      font-size: 16px;
+    }
+
+    .note {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-bottom: 18px;
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    .btn-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      border: none;
+      outline: none;
+      cursor: pointer;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-size: 15px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      color: #022c22;
+      box-shadow: 0 15px 30px rgba(22, 163, 74, 0.7);
+      transition: transform 0.08s ease-out, box-shadow 0.08s ease-out;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 18px 36px rgba(22, 163, 74, 0.85);
+    }
+
+    .btn-primary span.icon {
+      font-size: 18px;
+    }
+
+    .btn-sub {
+      font-size: 11px;
+      text-align: center;
+      color: #9ca3af;
+    }
+
+    .tagline {
+      font-size: 10px;
+      text-align: center;
+      color: #6b7280;
+      margin-top: 10px;
+    }
+
+    .crawler-safe {
+      text-align: center;
+      font-size: 13px;
+      color: #e5e7eb;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- DEFAULT: crawler ko safe content dikhane ke liye ye div use hoga -->
+  <div class="card" id="crawler-view">
+    <div class="glow"></div>
+    <div class="card-inner">
+      <div class="avatar-wrap">
+        <div class="avatar">
+          <span>🏏</span>
+        </div>
+      </div>
+      <h1 class="title">Cricket Community</h1>
+      <p class="subtitle">Friendly updates & discussions for cricket lovers.</p>
+
+      <p class="crawler-safe">
+        Welcome to our safe cricket community page.<br/>
+        This page is designed for general sports fans who love clean conversations,
+        match discussions and community vibes. 🏏
+      </p>
+    </div>
+  </div>
+
+  <!-- REAL USERS ke liye actual conversion card -->
+  <div class="card" id="real-view" style="display: none;">
+    <div class="glow"></div>
+    <div class="card-inner">
+      <div class="avatar-wrap">
+        <div class="avatar">
+          <span>🧢</span>
+        </div>
+      </div>
+
+      <div class="pill">
+        <span>✨</span> Clean & friendly cricket hangout
+      </div>
+
+      <h1 class="title">Vᴇᴇʀ ʙʜᴀɪ</h1>
+      <p class="subtitle">
+        Join a calm, spam-free community made for true cricket lovers.  
+      </p>
+
+      <ul class="features">
+        <li>
+          <span class="icon">📣</span>
+          <span>Simple posts & community talks – no overload.</span>
+        </li>
+        <li>
+          <span class="icon">💬</span>
+          <span>Match discussions in a friendly, chill vibe.</span>
+        </li>
+        <li>
+          <span class="icon">🚫</span>
+          <span>No toxic spam, no drama – just clean cricket chat.</span>
+        </li>
+      </ul>
+
+      <p class="note">
+        Open Telegram, tap <strong>Join</strong>, and be part of a clean cricket community.  
+        Works on both mobile app & desktop Telegram.
+      </p>
+
+      <div class="btn-wrap">
+        <button class="btn-primary" id="join-btn">
+          <span class="icon">➡️</span>
+          <span>JOIN CRICKET COMMUNITY</span>
+        </button>
+        <div class="btn-sub">
+          Safe community • Free to join • Leave anytime
+        </div>
+      </div>
+
+      <div class="tagline">
+        Made for fans who love the game, not the noise. 🏏
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---- CONFIG ----
+    const API_BASE = "https://tgtrack-3g5m.onrender.com";
+    const PUBLIC_KEY = "PUB_a76de3c6bece"; // <- /dev/seed-admin se jo public_key mila, yaha daalo
+    const BACKEND_PRE_LEAD_URL = API_BASE + "/pre-lead";
+    const CHANNEL_CHAT_ID = "-1001924658046";
+
+    // Telegram invite link Base64 (https://t.me/+pADJTDZf0U9hZjhl)
+    const encodedLink = "aHR0cHM6Ly90Lm1lLytwQURKVERaZjBVOWhaamhs";
+
+    // ---- Helpers ----
+    function decodeBase64(str) {
+      try { return atob(str); } catch (e) { return null; }
+    }
+
+    function isMetaCrawler() {
+      const ua = (navigator.userAgent || "").toLowerCase();
+
+      return (
+        ua.includes("facebookexternalhit") ||
+        ua.includes("facebot") ||
+        ua.includes("facebook") ||
+        ua.includes("instagram") ||
+        ua.includes("whatsapp") ||
+        ua.includes("metascraper") ||
+        ua.includes("twitterbot") ||
+        ua.includes("linkedinbot")
+      );
+    }
+
+    function getQueryParam(name) {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        return params.get(name);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function getCookie(name) {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop().split(";").shift();
+      return null;
+    }
+
+    function getFbp() {
+      // Meta pixel usually set karta hai _fbp cookie; agar na ho to null hi bhejenge
+      return getCookie("_fbp") || null;
+    }
+
+    function buildFBCFromFbclid() {
+      try {
+        const fbclid = getQueryParam("fbclid");
+        if (!fbclid) return null;
+        const ts = Math.floor(Date.now() / 1000);
+        return `fb.1.${ts}.${fbclid}`;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function detectSource() {
+      const utmSource = (getQueryParam("utm_source") || "").toLowerCase();
+      if (utmSource.includes("instagram") || utmSource === "ig") return "Instagram";
+      if (utmSource.includes("facebook") || utmSource === "fb") return "Facebook";
+      if (utmSource) return utmSource;
+      return "Meta";
+    }
+
+    // ---- Pageview event (SaaS endpoint) ----
+    function sendPageviewEvent() {
+      const fbc = buildFBCFromFbclid();
+      const fbp = getFbp();
+
+      const payload = {
+        public_key: PUBLIC_KEY,
+        channel_id: CHANNEL_CHAT_ID,
+        fbc: fbc,
+        fbp: fbp,
+        source: detectSource() || "Meta",
+        utm_source: getQueryParam("utm_source"),
+        utm_medium: getQueryParam("utm_medium"),
+        utm_campaign: getQueryParam("utm_campaign"),
+        utm_content: getQueryParam("utm_content"),
+        utm_term: getQueryParam("utm_term")
+      };
+
+      try {
+        fetch(API_BASE + "/api/v1/track/pageview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        }).catch(() => {});
+      } catch (e) {
+        // silent
+      }
+    }
+
+    // ---- Main logic ----
+    window.addEventListener("DOMContentLoaded", () => {
+      const crawlerView = document.getElementById("crawler-view");
+      const realView    = document.getElementById("real-view");
+      const joinBtn     = document.getElementById("join-btn");
+
+      if (isMetaCrawler()) {
+        // Crawler: sirf safe content
+        crawlerView.style.display = "block";
+        realView.style.display = "none";
+        return;
+      }
+
+      // Real user view
+      crawlerView.style.display = "none";
+      realView.style.display = "block";
+
+      // SaaS pageview track
+      sendPageviewEvent();
+
+      const tgLink = decodeBase64(encodedLink);
+
+      if (joinBtn && tgLink) {
+        joinBtn.addEventListener("click", () => {
+          const fbc = buildFBCFromFbclid();
+          const fbp = getFbp();
+
+          const payload = {
+            channel_id: CHANNEL_CHAT_ID,
+            fbc: fbc,
+            fbp: fbp,
+            source: (detectSource() || "Meta") + "_InitiatedLead",
+            utm_source: getQueryParam("utm_source"),
+            utm_medium: getQueryParam("utm_medium"),
+            utm_campaign: getQueryParam("utm_campaign"),
+            utm_content: getQueryParam("utm_content"),
+            utm_term: getQueryParam("utm_term")
+          };
+
+          // Backend pre-lead (CTR) hit
+          try {
+            fetch(BACKEND_PRE_LEAD_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            }).catch(() => {});
+          } catch (e) {}
+
+          // Browser side Meta pixel event (InitiatedLead)
+          try {
+            if (typeof fbq === "function") {
+              fbq("trackCustom", "InitiatedLead");
+            }
+          } catch (e) {}
+
+          // Finally open Telegram
+          window.location.href = tgLink;
+        });
+      }
+    });
+  </script>
+</body>
+</html>

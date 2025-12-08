@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 
 const app = express();
@@ -2839,6 +2840,421 @@ app.get('/lp/:channelId', async (req, res) => {
   } catch (err) {
     console.error('❌ Error in GET /lp/:channelId:', err);
     res.status(500).send('Internal error');
+  }
+});
+
+
+// ===== Phase 1: JSON Auth + Client Self-Signup + Owner Approval APIs =====
+
+// Helper: plan -> max channels
+function getMaxChannelsForPlan(plan) {
+  switch ((plan || '').toLowerCase()) {
+    case 'single':
+      return 1;
+    case 'starter':
+      return 3;
+    case 'pro':
+      return 5;
+    case 'agency':
+      return 10;
+    default:
+      return 1;
+  }
+}
+
+// Helper: basic email normalize
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+// API: Client self-signup with plan
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    let { name, email, password, plan } = req.body || {};
+    name = (name || '').trim();
+    email = normalizeEmail(email);
+    plan = (plan || '').trim().toLowerCase();
+
+    if (!name || !email || !password || !plan) {
+      return res.status(400).json({ success: false, error: 'Missing required fields' });
+    }
+
+    const allowedPlans = ['single', 'starter', 'pro', 'agency'];
+    if (!allowedPlans.includes(plan)) {
+      return res.status(400).json({ success: false, error: 'Invalid plan selected' });
+    }
+
+    // Email already used?
+    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existingUser) {
+      return res.status(400).json({ success: false, error: 'Email already registered' });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const password_hash = await bcrypt.hash(password, 10);
+
+    // Insert user as "client"
+    const insertUser = db.prepare(`
+      INSERT INTO users (email, password_hash, role, is_active, created_at)
+      VALUES (?, ?, 'client', 1, ?)
+    `);
+    const userResult = insertUser.run(email, password_hash, now);
+    const userId = userResult.lastInsertRowid;
+
+    // Generate slug from name
+    let slug = name
+      .toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .slice(0, 32);
+    if (!slug) {
+      slug = 'client-' + Date.now();
+    }
+
+    // Try to attach an owner/admin if available (first admin/owner)
+    let ownerUserId = null;
+    const ownerRow = db
+      .prepare('SELECT id FROM users WHERE role IN (?, ?) ORDER BY id LIMIT 1')
+      .get('admin', 'owner');
+    if (ownerRow && ownerRow.id) {
+      ownerUserId = ownerRow.id;
+    }
+
+    // Ensure slug roughly unique (by owner)
+    if (ownerUserId) {
+      const existingSlug = db
+        .prepare('SELECT id FROM clients WHERE owner_user_id = ? AND slug = ?')
+        .get(ownerUserId, slug);
+      if (existingSlug) {
+        slug = slug + '-' + Math.random().toString(36).slice(2, 5);
+      }
+    }
+
+    const publicKey = generateKey('PUB');
+    const secretKey = generateKey('SEC');
+    const maxChannels = getMaxChannelsForPlan(plan);
+
+    const insertClient = db.prepare(`
+      INSERT INTO clients (
+        name,
+        slug,
+        owner_user_id,
+        public_key,
+        secret_key,
+        default_pixel_id,
+        default_meta_token,
+        plan,
+        max_channels,
+        is_active,
+        created_at,
+        login_user_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const clientResult = insertClient.run(
+      name,
+      slug,
+      ownerUserId,
+      publicKey,
+      secretKey,
+      process.env.META_PIXEL_ID || null,
+      process.env.META_ACCESS_TOKEN || null,
+      plan,
+      maxChannels,
+      0, // pending until owner approves
+      now,
+      userId
+    );
+
+    return res.json({
+      success: true,
+      message: 'Account created. Please wait for owner approval.',
+      client: {
+        id: clientResult.lastInsertRowid,
+        name,
+        email,
+        plan,
+        max_channels: maxChannels,
+        is_active: 0,
+        slug,
+        public_key: publicKey,
+        secret_key: secretKey
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in /api/auth/signup:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+// API: Client login (JSON) - sets same cookie as HTML /login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    const normEmail = normalizeEmail(email);
+
+    if (!normEmail || !password) {
+      return res.status(400).json({ success: false, error: 'Missing email or password' });
+    }
+
+    const user = db
+      .prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
+      .get(normEmail);
+
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    // Client login only for this endpoint
+    if (user.role !== 'client') {
+      return res.status(403).json({ success: false, error: 'Not a client account' });
+    }
+
+    const clientRow = db
+      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+      .get(user.id);
+
+    if (!clientRow) {
+      return res.status(403).json({ success: false, error: 'Client workspace not found for this user' });
+    }
+
+    if (clientRow.is_active === 0) {
+      return res.json({
+        success: false,
+        status: 'pending',
+        message: 'Your account is pending approval by the owner.'
+      });
+    }
+
+    if (clientRow.is_active === -1) {
+      return res.json({
+        success: false,
+        status: 'rejected',
+        message: 'Your account was rejected. Contact support.'
+      });
+    }
+
+    // Same token format & cookie as existing /login flow
+    const token = signAuthToken(user.id);
+    res.cookie('auth', token, {
+      httpOnly: true,
+      sameSite: 'lax'
+      // secure: true // enable if behind HTTPS
+    });
+
+    return res.json({
+      success: true,
+      user: {
+        type: 'client',
+        user_id: user.id,
+        client_id: clientRow.id,
+        email: user.email,
+        plan: clientRow.plan,
+        max_channels: clientRow.max_channels,
+        is_active: clientRow.is_active,
+        name: clientRow.name,
+        slug: clientRow.slug
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in /api/auth/login:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+// API: Who am I? (client/admin/owner) using cookie auth
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+
+    if (user.role === 'client') {
+      const clientRow = db
+        .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+        .get(user.id);
+
+      if (!clientRow) {
+        return res.status(404).json({ success: false, error: 'Client workspace not found' });
+      }
+
+      return res.json({
+        success: true,
+        user: {
+          type: 'client',
+          user_id: user.id,
+          client_id: clientRow.id,
+          email: user.email,
+          plan: clientRow.plan,
+          max_channels: clientRow.max_channels,
+          is_active: clientRow.is_active,
+          name: clientRow.name,
+          slug: clientRow.slug
+        }
+      });
+    }
+
+    // Admin / owner
+    if (user.role === 'admin' || user.role === 'owner') {
+      return res.json({
+        success: true,
+        user: {
+          type: 'owner',
+          user_id: user.id,
+          email: user.email,
+          role: user.role
+        }
+      });
+    }
+
+    return res.status(403).json({ success: false, error: 'Unsupported role' });
+  } catch (err) {
+    console.error('❌ Error in /api/auth/me:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+// API: Owner/admin login (JSON) - optional helper for React owner panel
+app.post('/api/owner/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    const normEmail = normalizeEmail(email);
+    if (!normEmail || !password) {
+      return res.status(400).json({ success: false, error: 'Missing email or password' });
+    }
+
+    const user = db
+      .prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
+      .get(normEmail);
+
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    if (user.role !== 'admin' && user.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'Not an owner/admin account' });
+    }
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    const token = signAuthToken(user.id);
+    res.cookie('auth', token, {
+      httpOnly: true,
+      sameSite: 'lax'
+      // secure: true // HTTPS only
+    });
+
+    return res.json({
+      success: true,
+      user: {
+        type: 'owner',
+        user_id: user.id,
+        email: user.email,
+        role: user.role
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in /api/owner/login:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+// API: Owner/admin – list pending clients
+app.get('/api/owner/clients/pending', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    if (user.role !== 'admin' && user.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+
+    const rows = db
+      .prepare(`
+        SELECT
+          id,
+          name,
+          slug,
+          plan,
+          max_channels,
+          is_active,
+          created_at
+        FROM clients
+        WHERE is_active = 0
+        ORDER BY created_at DESC
+      `)
+      .all();
+
+    return res.json({
+      success: true,
+      clients: rows
+    });
+  } catch (err) {
+    console.error('❌ Error in GET /api/owner/clients/pending:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+// API: Owner/admin – approve client
+app.post('/api/owner/clients/:id/approve', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    if (user.role !== 'admin' && user.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+
+    const clientId = parseInt(req.params.id, 10);
+    if (!clientId || Number.isNaN(clientId)) {
+      return res.status(400).json({ success: false, error: 'Invalid client id' });
+    }
+
+    const update = db.prepare(`
+      UPDATE clients
+      SET is_active = 1
+      WHERE id = ?
+    `);
+    update.run(clientId);
+
+    const client = db
+      .prepare('SELECT id, name, plan, max_channels, is_active FROM clients WHERE id = ?')
+      .get(clientId);
+
+    return res.json({ success: true, client });
+  } catch (err) {
+    console.error('❌ Error in POST /api/owner/clients/:id/approve:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+// API: Owner/admin – reject client
+app.post('/api/owner/clients/:id/reject', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    if (user.role !== 'admin' && user.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+
+    const clientId = parseInt(req.params.id, 10);
+    if (!clientId || Number.isNaN(clientId)) {
+      return res.status(400).json({ success: false, error: 'Invalid client id' });
+    }
+
+    const update = db.prepare(`
+      UPDATE clients
+      SET is_active = -1
+      WHERE id = ?
+    `);
+    update.run(clientId);
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error in POST /api/owner/clients/:id/reject:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
   }
 });
 
