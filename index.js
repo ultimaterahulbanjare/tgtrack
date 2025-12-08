@@ -10,23 +10,29 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 
+// ✅ NAYA line
+const path = require('path');
+
 const app = express();
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// 🔹 CORS allow for LP → backend calls
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*"); // chahe to yaha Netlify domain daal sakte ho
-  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+// ✅ YAHI par static serve add karo
+app.use('/frontend', express.static(path.join(__dirname, 'frontend')));
 
-  if (req.method === "OPTIONS") {
+// CORS allow for LP → backend calls
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*'); // chahe to yaha Netlify domain daal sakte ho
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
-
   next();
 });
+
 
 // ----- Helper functions for tracking -----
 // Client IP detect (x-forwarded-for etc.)
