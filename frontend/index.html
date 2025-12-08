@@ -1,343 +1,923 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<title>UTS Phase 1 – Auth & Owner Panel</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-<script crossorigin src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
-<style>
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#020617;color:#e5e7eb}.app-shell{max-width:960px;margin:0 auto;padding:24px 16px 40px}h1{font-size:26px;margin:0 0 4px}.muted{color:#9ca3af;font-size:13px}.tabs{display:flex;gap:8px;margin-top:20px;margin-bottom:16px;flex-wrap:wrap}.tab-btn{padding:6px 12px;border-radius:999px;border:1px solid #4b5563;background:transparent;color:#e5e7eb;font-size:13px;cursor:pointer}.tab-btn.active{background:linear-gradient(135deg,#22c55e,#16a34a);color:#0b1120;border-color:transparent;font-weight:600}.card{border-radius:16px;border:1px solid #1f2937;background:radial-gradient(circle at top left,rgba(34,197,94,.08),transparent 55%);padding:18px 16px 16px;margin-bottom:18px}.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.pill{border-radius:999px;padding:3px 10px;font-size:11px;border:1px solid #374151;color:#9ca3af}.plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:8px 0 14px}.plan-card{border-radius:14px;border:1px solid #1f2937;padding:10px 10px 12px;cursor:pointer;background:#020617}.plan-card.selected{border-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.4);background:radial-gradient(circle at top,rgba(34,197,94,.12),#020617 60%)}.plan-name{font-weight:600;font-size:14px;margin-bottom:2px}.plan-meta{font-size:12px;color:#9ca3af}.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;background:rgba(34,197,94,.1);color:#bbf7d0;margin-top:4px}form{display:grid;gap:10px;margin-top:4px}label{font-size:13px;margin-bottom:3px;display:block}input{width:100%;padding:7px 9px;border-radius:10px;border:1px solid #374151;background:#020617;color:#e5e7eb;font-size:13px}input:focus{outline:none;border-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.3)}button.primary{margin-top:4px;padding:8px 12px;border-radius:10px;border:none;cursor:pointer;font-size:13px;font-weight:600;background:linear-gradient(135deg,#22c55e,#16a34a);color:#02140a}button.secondary{padding:6px 10px;border-radius:10px;border:1px solid #374151;background:transparent;cursor:pointer;font-size:12px;color:#e5e7eb}.status{font-size:12px;margin-top:6px}.status.ok{color:#4ade80}.status.err{color:#f97373}.status.neutral{color:#9ca3af}table{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}th,td{padding:6px 4px;border-bottom:1px solid #111827;text-align:left}th{font-weight:500;color:#9ca3af;font-size:11px}tr:last-child td{border-bottom:none}.tag{display:inline-block;padding:2px 6px;border-radius:999px;font-size:11px;border:1px solid #374151;color:#d1d5db}.layout-two{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px}@media (max-width:768px){.layout-two{grid-template-columns:minmax(0,1fr)}}
-</style>
-</head>
-<body>
-<div id="root"></div>
-<script type="text/babel">
-const { useState, useEffect } = React;
-const API_BASE = '';
-
-// status hook
-function useStatus(){
-  const [msg,setMsg]=useState('');
-  const [type,setType]=useState('neutral');
-  const push=(m,t='neutral')=>{setMsg(m);setType(t)};
-  return [msg,type,push];
-}
-
-// Signup card
-function SignupCard(){
-  const [plan,setPlan]=useState('starter');
-  const [form,setForm]=useState({name:'',email:'',password:''});
-  const [status,statusType,setStatus]=useStatus();
-  const [loading,setLoading]=useState(false);
-  const plans=[
-    {id:'single',name:'Single',channels:1,note:'Perfect for 1 channel'},
-    {id:'starter',name:'Starter',channels:3,note:'For small teams'},
-    {id:'pro',name:'Pro',channels:5,note:'Scaling agencies'},
-    {id:'agency',name:'Agency',channels:10,note:'Big agency setup'}
-  ];
-  const onChange=e=>setForm({...form,[e.target.name]:e.target.value});
-  const onSubmit=async e=>{
-    e.preventDefault();
-    setStatus('', 'neutral');
-    if(!form.name||!form.email||!form.password){setStatus('Please fill all fields.','err');return;}
-    setLoading(true);
-    try{
-      const res=await fetch(API_BASE+'/api/auth/signup',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({name:form.name,email:form.email,password:form.password,plan})
-      });
-      const data=await res.json();
-      if(!res.ok||!data.success){setStatus(data.error||'Signup failed','err');}
-      else{setStatus('Account created! Wait for owner approval.','ok');}
-    }catch(err){
-      console.error(err);setStatus('Network error during signup.','err');
-    }finally{setLoading(false);}
-  };
-  return(
-    <div className="card">
-      <div className="card-header">
-        <div>
-          <h2>Client signup</h2>
-          <div className="muted">Select a plan and create your workspace.</div>
-        </div>
-        <div className="pill">Phase 1 · Auth</div>
-      </div>
-      <div className="plans">
-        {plans.map(p=>(
-          <div key={p.id} className={'plan-card '+(plan===p.id?'selected':'')} onClick={()=>setPlan(p.id)}>
-            <div className="plan-name">{p.name}</div>
-            <div className="plan-meta">Up to {p.channels} channels</div>
-            <div className="muted" style={{fontSize:11,marginTop:3}}>{p.note}</div>
-          </div>
-        ))}
-      </div>
-      <form onSubmit={onSubmit}>
-        <div>
-          <label>Full name / agency name</label>
-          <input name="name" value={form.name} onChange={onChange} placeholder="e.g. Rahul Trading Signals" />
-        </div>
-        <div>
-          <label>Email</label>
-          <input name="email" type="email" value={form.email} onChange={onChange} placeholder="you@example.com" />
-        </div>
-        <div>
-          <label>Password</label>
-          <input name="password" type="password" value={form.password} onChange={onChange} placeholder="••••••••" />
-        </div>
-        <button className="primary" type="submit" disabled={loading}>{loading?'Creating account…':'Create account'}</button>
-      </form>
-      {status && <div className={'status '+statusType}>{status}</div>}
-    </div>
-  );
-}
-
-// Client login
-function ClientLoginCard({onLoggedIn}){
-  const [form,setForm]=useState({email:'',password:''});
-  const [status,statusType,setStatus]=useStatus();
-  const [loading,setLoading]=useState(false);
-  const onChange=e=>setForm({...form,[e.target.name]:e.target.value});
-  const onSubmit=async e=>{
-    e.preventDefault();
-    setStatus('', 'neutral');
-    if(!form.email||!form.password){setStatus('Please fill email & password.','err');return;}
-    setLoading(true);
-    try{
-      const res=await fetch(API_BASE+'/api/auth/login',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(form)
-      });
-      const data=await res.json();
-      if(!data.success){
-        if(data.status==='pending')setStatus(data.message||'Account pending approval.','neutral');
-        else if(data.status==='rejected')setStatus(data.message||'Account rejected.','err');
-        else setStatus(data.error||'Login failed.','err');
-      }else{
-        setStatus('Logged in.','ok');
-        onLoggedIn&&onLoggedIn(data.user);
+  <head>
+    <meta charset="UTF-8" />
+    <title>Telegram Funnel – Client Panel (Phase 1 + 2)</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <style>
+      * {
+        box-sizing: border-box;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+          sans-serif;
       }
-    }catch(err){
-      console.error(err);setStatus('Network error during login.','err');
-    }finally{setLoading(false);}
-  };
-  return(
-    <div className="card">
-      <div className="card-header">
-        <div>
-          <h2>Client login</h2>
-          <div className="muted">Once approved, use your email to access the dashboard.</div>
-        </div>
-        <div className="pill">Client</div>
-      </div>
-      <form onSubmit={onSubmit}>
-        <div>
-          <label>Email</label>
-          <input name="email" type="email" value={form.email} onChange={onChange} placeholder="you@example.com" />
-        </div>
-        <div>
-          <label>Password</label>
-          <input name="password" type="password" value={form.password} onChange={onChange} placeholder="••••••••" />
-        </div>
-        <button className="primary" type="submit" disabled={loading}>{loading?'Signing in…':'Login'}</button>
-      </form>
-      {status && <div className={'status '+statusType}>{status}</div>}
-    </div>
-  );
-}
 
-// Owner login
-function OwnerLoginCard(){
-  const [form,setForm]=useState({email:'',password:''});
-  const [status,statusType,setStatus]=useStatus();
-  const [loading,setLoading]=useState(false);
-  const onChange=e=>setForm({...form,[e.target.name]:e.target.value});
-  const onSubmit=async e=>{
-    e.preventDefault();
-    setStatus('', 'neutral');
-    if(!form.email||!form.password){setStatus('Please fill email & password.','err');return;}
-    setLoading(true);
-    try{
-      const res=await fetch(API_BASE+'/api/owner/login',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(form)
-      });
-      const data=await res.json();
-      if(!data.success)setStatus(data.error||'Owner login failed.','err');
-      else setStatus('Owner logged in.','ok');
-    }catch(err){
-      console.error(err);setStatus('Network error during owner login.','err');
-    }finally{setLoading(false);}
-  };
-  return(
-    <div className="card">
-      <div className="card-header">
-        <div>
-          <h2>Owner / admin login</h2>
-          <div className="muted">Use the seeded admin account to approve clients.</div>
-        </div>
-        <div className="pill">Owner</div>
-      </div>
-      <form onSubmit={onSubmit}>
-        <div>
-          <label>Email</label>
-          <input name="email" type="email" value={form.email} onChange={onChange} placeholder="admin@example.com" />
-        </div>
-        <div>
-          <label>Password</label>
-          <input name="password" type="password" value={form.password} onChange={onChange} placeholder="Admin@123" />
-        </div>
-        <button className="primary" type="submit" disabled={loading}>{loading?'Signing in…':'Login as owner'}</button>
-      </form>
-      {status && <div className={'status '+statusType}>{status}</div>}
-    </div>
-  );
-}
+      body {
+        margin: 0;
+        padding: 0;
+        background: #050816;
+        color: #e5e7eb;
+      }
 
-// Owner pending clients
-function OwnerPendingClientsCard(){
-  const [rows,setRows]=useState([]);
-  const [status,statusType,setStatus]=useStatus();
-  const [loading,setLoading]=useState(false);
-  const fetchPending=async()=>{
-    setLoading(true);setStatus('', 'neutral');
-    try{
-      const res=await fetch(API_BASE+'/api/owner/clients/pending');
-      const data=await res.json();
-      if(!data.success)setStatus(data.error||'Could not load pending clients.','err');
-      else setRows(data.clients||[]);
-    }catch(err){
-      console.error(err);setStatus('Network error while loading pending clients.','err');
-    }finally{setLoading(false);}
-  };
-  useEffect(()=>{fetchPending();},[]);
-  const act=async(id,mode)=>{
-    try{
-      const res=await fetch(API_BASE+`/api/owner/clients/${id}/${mode}`,{method:'POST'});
-      const data=await res.json();
-      if(!data.success)setStatus(data.error||`Failed to ${mode} client.`,'err');
-      else{setStatus(`Client ${mode}d.`,'ok');setRows(prev=>prev.filter(r=>r.id!==id));}
-    }catch(err){
-      console.error(err);setStatus('Network error.','err');
-    }
-  };
-  return(
-    <div className="card">
-      <div className="card-header">
-        <div>
-          <h2>Pending client approvals</h2>
-          <div className="muted">Approve accounts after checking payment / eligibility.</div>
-        </div>
-        <button className="secondary" type="button" onClick={fetchPending}>Refresh</button>
-      </div>
-      {rows.length===0 && <div className="muted" style={{fontSize:12}}>No pending clients right now.</div>}
-      {rows.length>0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th><th>Name</th><th>Slug</th><th>Plan</th><th>Max</th><th>Created</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r=>(
-              <tr key={r.id}>
-                <td>{r.id}</td>
-                <td>{r.name}</td>
-                <td>{r.slug}</td>
-                <td><span className="tag">{r.plan}</span></td>
-                <td>{r.max_channels}</td>
-                <td>{r.created_at||'-'}</td>
-                <td>
-                  <button className="secondary" style={{marginRight:6,fontSize:11}} onClick={()=>act(r.id,'approve')}>Approve</button>
-                  <button className="secondary" style={{fontSize:11,borderColor:'#4b5563',color:'#fca5a5'}} onClick={()=>act(r.id,'reject')}>Reject</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {status && <div className={'status '+statusType}>{status}</div>}
-    </div>
-  );
-}
+      .app-shell {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 24px 16px 40px;
+      }
 
-// Client session preview
-function ClientMeCard(){
-  const [info,setInfo]=useState(null);
-  const [status,statusType,setStatus]=useStatus();
-  const loadMe=async()=>{
-    setStatus('', 'neutral');
-    try{
-      const res=await fetch(API_BASE+'/api/auth/me');
-      const data=await res.json();
-      if(!data.success)setStatus(data.error||'Not logged in.','err');
-      else{setInfo(data.user);setStatus('Session OK.','ok');}
-    }catch(err){
-      console.error(err);setStatus('Network error while checking session.','err');
-    }
-  };
-  useEffect(()=>{loadMe();},[]);
-  return(
-    <div className="card">
-      <div className="card-header">
-        <div>
-          <h2>Client session preview</h2>
-          <div className="muted">This will be the base for your Phase 2 dashboard.</div>
-        </div>
-        <button className="secondary" type="button" onClick={loadMe}>Refresh</button>
-      </div>
-      {info ? (
-        <div style={{fontSize:13}}>
-          <div><strong>Name:</strong> {info.name}</div>
-          <div><strong>Email:</strong> {info.email}</div>
-          <div><strong>Plan:</strong> {info.plan} (max {info.max_channels} channels)</div>
-          <div><strong>Client ID:</strong> {info.client_id}</div>
-          <div><strong>Slug:</strong> {info.slug}</div>
-        </div>
-      ) : (
-        <div className="muted" style={{fontSize:12}}>Not logged in yet. Login from the Client login tab first.</div>
-      )}
-      {status && <div className={'status '+statusType}>{status}</div>}
-    </div>
-  );
-}
+      .card {
+        background: linear-gradient(135deg, #0b1120, #020617);
+        border-radius: 18px;
+        padding: 20px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.6);
+      }
 
-// Root app
-function App(){
-  const [tab,setTab]=useState('signup');
-  return(
-    <div className="app-shell">
-      <h1>Universal Tracking – Phase 1</h1>
-      <div className="muted">Auth + plan selection + owner approval layer, built on top of your existing backend.</div>
-      <div className="tabs">
-        <button className={'tab-btn '+(tab==='signup'?'active':'')} onClick={()=>setTab('signup')}>1) Client signup</button>
-        <button className={'tab-btn '+(tab==='client-login'?'active':'')} onClick={()=>setTab('client-login')}>2) Client login</button>
-        <button className={'tab-btn '+(tab==='client-me'?'active':'')} onClick={()=>setTab('client-me')}>3) Client session preview</button>
-        <button className={'tab-btn '+(tab==='owner'?'active':'')} onClick={()=>setTab('owner')}>4) Owner · Approvals</button>
-      </div>
-      {tab==='signup' && <SignupCard />}
-      {tab==='client-login' && (
-        <div className="layout-two">
-          <ClientLoginCard />
-          <ClientMeCard />
-        </div>
-      )}
-      {tab==='client-me' && <ClientMeCard />}
-      {tab==='owner' && (
-        <div className="layout-two">
-          <OwnerLoginCard />
-          <OwnerPendingClientsCard />
-        </div>
-      )}
-    </div>
-  );
-}
+      .heading {
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        margin-bottom: 6px;
+      }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-</script>
-</body>
+      .subheading {
+        font-size: 13px;
+        color: #9ca3af;
+        margin-bottom: 16px;
+      }
+
+      .tabs {
+        display: inline-flex;
+        background: rgba(15, 23, 42, 0.8);
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        padding: 3px;
+        margin-top: 8px;
+        margin-bottom: 20px;
+      }
+
+      .tab-btn {
+        border: none;
+        background: transparent;
+        color: #9ca3af;
+        padding: 6px 14px;
+        font-size: 13px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: all 0.16s ease-out;
+      }
+
+      .tab-btn.active {
+        background: radial-gradient(circle at top left, #22c55e, #16a34a);
+        color: #020617;
+        font-weight: 600;
+        box-shadow: 0 12px 25px rgba(34, 197, 94, 0.45);
+      }
+
+      .grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      @media (min-width: 900px) {
+        .grid-2 {
+          grid-template-columns: 1.1fr 0.9fr;
+        }
+        .grid-3 {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      .label {
+        font-size: 12px;
+        color: #9ca3af;
+        margin-bottom: 4px;
+      }
+
+      .input,
+      .select,
+      .textarea {
+        width: 100%;
+        background: #020617;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        padding: 9px 11px;
+        font-size: 13px;
+        color: #e5e7eb;
+        outline: none;
+        transition: border 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+      }
+
+      .input:focus,
+      .select:focus,
+      .textarea:focus {
+        border-color: #22c55e;
+        box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.4);
+        background: #020617;
+      }
+
+      .textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+
+      .btn {
+        border: none;
+        border-radius: 999px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.16s ease-out;
+      }
+
+      .btn-primary {
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: #020617;
+        box-shadow: 0 14px 30px rgba(34, 197, 94, 0.5);
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 16px 40px rgba(34, 197, 94, 0.65);
+      }
+
+      .btn-ghost {
+        background: transparent;
+        color: #9ca3af;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        color: #9ca3af;
+      }
+
+      .pill-badge {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: #22c55e;
+      }
+
+      .pill-pending {
+        background: rgba(234, 179, 8, 0.06);
+        border-color: rgba(234, 179, 8, 0.6);
+        color: #eab308;
+      }
+
+      .pill-rejected {
+        background: rgba(239, 68, 68, 0.06);
+        border-color: rgba(239, 68, 68, 0.6);
+        color: #f87171;
+      }
+
+      .plan-grid {
+        display: grid;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      @media (min-width: 640px) {
+        .plan-grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+      }
+
+      .plan-card {
+        border-radius: 16px;
+        padding: 10px 10px 12px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        background: rgba(15, 23, 42, 0.85);
+        cursor: pointer;
+        transition: all 0.16s ease-out;
+      }
+
+      .plan-card.active {
+        border-color: #22c55e;
+        box-shadow: 0 10px 22px rgba(34, 197, 94, 0.35);
+        background: radial-gradient(circle at top left, #16a34a, #020617);
+      }
+
+      .plan-name {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 2px;
+      }
+
+      .plan-desc {
+        font-size: 11px;
+        color: #9ca3af;
+      }
+
+      .plan-badge {
+        font-size: 11px;
+        margin-top: 4px;
+        color: #22c55e;
+      }
+
+      .small {
+        font-size: 11px;
+        color: #9ca3af;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 8px;
+        font-size: 12px;
+      }
+
+      th,
+      td {
+        padding: 6px 8px;
+        border-bottom: 1px solid rgba(30, 64, 175, 0.6);
+      }
+
+      th {
+        text-align: left;
+        font-size: 11px;
+        color: #9ca3af;
+        font-weight: 500;
+      }
+
+      tr:hover td {
+        background: rgba(15, 23, 42, 0.9);
+      }
+
+      .chip {
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid rgba(148, 163, 184, 0.55);
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        display: inline-block;
+        margin-right: 4px;
+      }
+
+      .status-active {
+        background: #22c55e;
+      }
+
+      .status-paused {
+        background: #eab308;
+      }
+
+      .status-disabled {
+        background: #f97316;
+      }
+
+      .muted {
+        font-size: 11px;
+        color: #6b7280;
+      }
+
+      .error {
+        font-size: 12px;
+        color: #f97373;
+        margin-top: 4px;
+      }
+
+      .success {
+        font-size: 12px;
+        color: #4ade80;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <div class="card">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+          "
+        >
+          <div>
+            <div class="heading">Telegram Funnel – Client Access</div>
+            <div class="subheading">
+              Self-signup with a plan, wait for owner approval, then manage
+              channels & CAPI config in one place.
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <div class="pill">
+              <span class="pill-badge"></span>
+              <span>Universal Tracking Workspace</span>
+            </div>
+            <div class="small">
+              Cookie: <code>auth</code> · Multi-tenant DB · Meta CAPI + Telegram
+              joins
+            </div>
+          </div>
+        </div>
+
+        <div id="root" style="margin-top: 16px"></div>
+      </div>
+    </div>
+
+    <!-- React + ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <script>
+      const e = React.createElement;
+
+      const PLAN_CONFIG = [
+        { key: 'single', name: 'Single', max: 1 },
+        { key: 'starter', name: 'Starter', max: 3 },
+        { key: 'pro', name: 'Pro', max: 5 },
+        { key: 'agency', name: 'Agency', max: 10 },
+      ];
+
+      function PlanSelector({ value, onChange }) {
+        return React.createElement(
+          'div',
+          null,
+          React.createElement(
+            'div',
+            { className: 'label' },
+            'Select your plan (Phase 1)'
+          ),
+          React.createElement(
+            'div',
+            { className: 'plan-grid' },
+            PLAN_CONFIG.map((p) =>
+              React.createElement(
+                'div',
+                {
+                  key: p.key,
+                  className:
+                    'plan-card ' + (value === p.key ? 'active' : ''),
+                  onClick: () => onChange(p.key),
+                },
+                React.createElement('div', { className: 'plan-name' }, p.name),
+                React.createElement(
+                  'div',
+                  { className: 'plan-desc' },
+                  p.max === 1
+                    ? '1 active channel'
+                    : p.max + ' active channels'
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'plan-badge' },
+                  'Perfect for ',
+                  p.key === 'single'
+                    ? 'solo channel'
+                    : p.key === 'starter'
+                    ? 'new creators'
+                    : p.key === 'pro'
+                    ? 'agencies'
+                    : 'high volume scaling'
+                )
+              )
+            )
+          )
+        );
+      }
+
+      function SignupForm({ onDone }) {
+        const [name, setName] = React.useState('');
+        const [email, setEmail] = React.useState('');
+        const [password, setPassword] = React.useState('');
+        const [plan, setPlan] = React.useState('starter');
+        const [loading, setLoading] = React.useState(false);
+        const [message, setMessage] = React.useState('');
+        const [error, setError] = React.useState('');
+
+        async function handleSubmit(ev) {
+          ev.preventDefault();
+          setError('');
+          setMessage('');
+          setLoading(true);
+          try {
+            const res = await fetch('/api/auth/signup', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name,
+                email,
+                password,
+                plan,
+              }),
+            });
+            const data = await res.json();
+            if (!data.success) {
+              setError(data.error || 'Failed to create account');
+            } else {
+              setMessage(
+                data.message ||
+                  'Account created. Wait for owner approval, then login.'
+              );
+              if (onDone) onDone();
+            }
+          } catch (err) {
+            console.error(err);
+            setError('Network error.');
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        return React.createElement(
+          'form',
+          { onSubmit: handleSubmit },
+          React.createElement(
+            'div',
+            { className: 'grid grid-2' },
+            React.createElement(
+              'div',
+              null,
+              React.createElement('div', { className: 'label' }, 'Name'),
+              React.createElement('input', {
+                className: 'input',
+                value: name,
+                onChange: (e) => setName(e.target.value),
+                required: true,
+                placeholder: 'Your name / brand name',
+              })
+            ),
+            React.createElement(
+              'div',
+              null,
+              React.createElement('div', { className: 'label' }, 'Email'),
+              React.createElement('input', {
+                className: 'input',
+                type: 'email',
+                value: email,
+                onChange: (e) => setEmail(e.target.value),
+                required: true,
+                placeholder: 'you@example.com',
+              })
+            )
+          ),
+          React.createElement(
+            'div',
+            { style: { marginTop: 10 } },
+            React.createElement('div', { className: 'label' }, 'Password'),
+            React.createElement('input', {
+              className: 'input',
+              type: 'password',
+              value: password,
+              onChange: (e) => setPassword(e.target.value),
+              required: true,
+              placeholder: 'Min 6 characters',
+            })
+          ),
+          React.createElement(
+            'div',
+            { style: { marginTop: 10 } },
+            React.createElement(PlanSelector, {
+              value: plan,
+              onChange: setPlan,
+            })
+          ),
+          React.createElement(
+            'div',
+            {
+              style: {
+                marginTop: 14,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 8,
+              },
+            },
+            React.createElement(
+              'button',
+              {
+                type: 'submit',
+                className: 'btn btn-primary',
+                disabled: loading,
+              },
+              loading ? 'Creating…' : 'Create account'
+            ),
+            React.createElement(
+              'div',
+              { className: 'small' },
+              'Owner will approve your workspace. You can then login from the Login tab.'
+            )
+          ),
+          error && React.createElement('div', { className: 'error' }, error),
+          message &&
+            React.createElement('div', { className: 'success' }, message)
+        );
+      }
+
+      function LoginForm({ onLoggedIn }) {
+        const [email, setEmail] = React.useState('');
+        const [password, setPassword] = React.useState('');
+        const [loading, setLoading] = React.useState(false);
+        const [error, setError] = React.useState('');
+        const [info, setInfo] = React.useState('');
+
+        async function handleSubmit(ev) {
+          ev.preventDefault();
+          setError('');
+          setInfo('');
+          setLoading(true);
+          try {
+            const res = await fetch('/api/auth/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email, password }),
+            });
+            const data = await res.json();
+            if (!data.success) {
+              if (data.status === 'pending') {
+                setInfo(data.message || 'Pending approval.');
+              } else if (data.status === 'rejected') {
+                setError(data.message || 'Account rejected.');
+              } else {
+                setError(data.error || 'Invalid credentials');
+              }
+            } else {
+              setInfo('Logged in successfully.');
+              if (onLoggedIn) onLoggedIn(data.user);
+            }
+          } catch (err) {
+            console.error(err);
+            setError('Network error.');
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        return React.createElement(
+          'form',
+          { onSubmit: handleSubmit },
+          React.createElement(
+            'div',
+            { className: 'grid grid-2' },
+            React.createElement(
+              'div',
+              null,
+              React.createElement('div', { className: 'label' }, 'Email'),
+              React.createElement('input', {
+                className: 'input',
+                type: 'email',
+                value: email,
+                onChange: (e) => setEmail(e.target.value),
+                required: true,
+                placeholder: 'you@example.com',
+              })
+            ),
+            React.createElement(
+              'div',
+              null,
+              React.createElement('div', { className: 'label' }, 'Password'),
+              React.createElement('input', {
+                className: 'input',
+                type: 'password',
+                value: password,
+                onChange: (e) => setPassword(e.target.value),
+                required: true,
+              })
+            )
+          ),
+          React.createElement(
+            'div',
+            { style: { marginTop: 14 } },
+            React.createElement(
+              'button',
+              {
+                type: 'submit',
+                className: 'btn btn-primary',
+                disabled: loading,
+              },
+              loading ? 'Logging in…' : 'Login'
+            )
+          ),
+          error && React.createElement('div', { className: 'error' }, error),
+          info && React.createElement('div', { className: 'success' }, info),
+          React.createElement(
+            'div',
+            { className: 'small', style: { marginTop: 6 } },
+            'Tip: After login, open the Dashboard tab to manage channels.'
+          )
+        );
+      }
+
+      function ChannelsTable({ channels }) {
+        if (!channels || channels.length === 0) {
+          return React.createElement(
+            'div',
+            { className: 'muted', style: { marginTop: 6 } },
+            'No channels added yet (Phase 2 backend APIs need to be wired).'
+          );
+        }
+
+        return React.createElement(
+          'table',
+          null,
+          React.createElement(
+            'thead',
+            null,
+            React.createElement(
+              'tr',
+              null,
+              React.createElement('th', null, 'Channel'),
+              React.createElement('th', null, 'Telegram ID'),
+              React.createElement('th', null, 'Pixel'),
+              React.createElement('th', null, 'Today / 7d / Total'),
+              React.createElement('th', null, 'Status')
+            )
+          ),
+          React.createElement(
+            'tbody',
+            null,
+            channels.map((ch) =>
+              React.createElement(
+                'tr',
+                { key: ch.id },
+                React.createElement('td', null, ch.telegram_title || '—'),
+                React.createElement(
+                  'td',
+                  null,
+                  React.createElement(
+                    'span',
+                    { className: 'chip' },
+                    ch.telegram_chat_id
+                  )
+                ),
+                React.createElement(
+                  'td',
+                  null,
+                  React.createElement(
+                    'span',
+                    { className: 'muted' },
+                    ch.pixel_id || '—'
+                  )
+                ),
+                React.createElement(
+                  'td',
+                  null,
+                  React.createElement(
+                    'div',
+                    { style: { fontSize: 11 } },
+                    (ch.stats && ch.stats.today) || 0,
+                    ' / ',
+                    (ch.stats && ch.stats.last7) || 0,
+                    ' / ',
+                    (ch.stats && ch.stats.total) || 0
+                  )
+                ),
+                React.createElement(
+                  'td',
+                  null,
+                  React.createElement('span', { className: 'chip' }, 'Active')
+                )
+              )
+            )
+          )
+        );
+      }
+
+      function DashboardSkeleton() {
+        const [summary, setSummary] = React.useState(null);
+        const [channels, setChannels] = React.useState([]);
+        const [status, setStatus] = React.useState(
+          'Phase 2 backend APIs need to be wired on /api/client/...'
+        );
+
+        // Only try /api/auth/me for now (just to show logged in user)
+        React.useEffect(() => {
+          (async () => {
+            try {
+              const res = await fetch('/api/auth/me');
+              const data = await res.json();
+              if (data && data.success && data.user) {
+                setSummary({
+                  client: {
+                    name: data.user.name,
+                    email: data.user.email,
+                    plan: data.user.plan,
+                    max_channels: data.user.max_channels,
+                  },
+                });
+                setStatus(
+                  'Logged in as ' +
+                    (data.user.email || data.user.name || 'client') +
+                    '. Backend-side Phase 2 endpoints still to be added.'
+                );
+              } else {
+                setStatus('Not logged in as client.');
+              }
+            } catch (err) {
+              console.error(err);
+              setStatus('Network error while checking session.');
+            }
+          })();
+        }, []);
+
+        const clientInfo = summary && summary.client;
+
+        return React.createElement(
+          'div',
+          { className: 'grid grid-2' },
+          React.createElement(
+            'div',
+            null,
+            React.createElement(
+              'div',
+              { className: 'label' },
+              'Plan & usage (placeholder)'
+            ),
+            clientInfo &&
+              React.createElement(
+                'div',
+                {
+                  style: {
+                    display: 'flex',
+                    gap: 8,
+                    alignItems: 'center',
+                    marginTop: 6,
+                  },
+                },
+                React.createElement(
+                  'span',
+                  { className: 'chip' },
+                  clientInfo.plan?.toUpperCase(),
+                  ' · ',
+                  clientInfo.max_channels,
+                  ' channels'
+                )
+              ),
+            React.createElement(
+              'div',
+              { className: 'small', style: { marginTop: 8 } },
+              'Once Phase 2 backend APIs are in place, this section will show total joins (today, 7 days, lifetime) and channel usage.'
+            ),
+            React.createElement(
+              'div',
+              { style: { marginTop: 16 } },
+              React.createElement(
+                'div',
+                { className: 'label' },
+                'Channels (placeholder)'
+              ),
+              React.createElement(ChannelsTable, { channels })
+            )
+          ),
+          React.createElement(
+            'div',
+            null,
+            React.createElement(
+              'div',
+              { className: 'label' },
+              'Channel & CAPI config (placeholder UI)'
+            ),
+            React.createElement(
+              'div',
+              { className: 'small', style: { marginTop: 8 } },
+              'Here you will be able to add/edit Telegram channels, per-channel pixel & Meta access token, and LP URL. For now, we are only shipping the frontend skeleton.'
+            ),
+            React.createElement(
+              'div',
+              { style: { marginTop: 12 } },
+              React.createElement(
+                'div',
+                { className: 'label' },
+                'Telegram Chat ID'
+              ),
+              React.createElement('input', {
+                className: 'input',
+                placeholder: '-1001234567890',
+                disabled: true,
+              })
+            ),
+            React.createElement(
+              'div',
+              { style: { marginTop: 8 } },
+              React.createElement(
+                'div',
+                { className: 'label' },
+                'Pixel ID (per-channel override)'
+              ),
+              React.createElement('input', {
+                className: 'input',
+                placeholder: '123456789012345',
+                disabled: true,
+              })
+            ),
+            React.createElement(
+              'div',
+              { style: { marginTop: 8 } },
+              React.createElement(
+                'div',
+                { className: 'label' },
+                'Meta Access Token (per-channel)'
+              ),
+              React.createElement('input', {
+                className: 'input',
+                placeholder: 'EAAG…',
+                disabled: true,
+              })
+            ),
+            React.createElement(
+              'div',
+              { style: { marginTop: 8 } },
+              React.createElement(
+                'div',
+                { className: 'label' },
+                'Landing Page URL'
+              ),
+              React.createElement('input', {
+                className: 'input',
+                placeholder: 'https://yourlp.netlify.app/…',
+                disabled: true,
+              })
+            )
+          ),
+          React.createElement(
+            'div',
+            { style: { gridColumn: '1 / -1', marginTop: 10 } },
+            React.createElement('div', { className: 'muted' }, status)
+          )
+        );
+      }
+
+      function App() {
+        const [tab, setTab] = React.useState('signup');
+        const [user, setUser] = React.useState(null);
+
+        function handleLoggedIn(u) {
+          setUser(u);
+          setTab('dashboard');
+        }
+
+        function handleSignupDone() {
+          setTab('login');
+        }
+
+        return React.createElement(
+          'div',
+          null,
+          React.createElement(
+            'div',
+            { className: 'tabs' },
+            React.createElement(
+              'button',
+              {
+                type: 'button',
+                className:
+                  'tab-btn ' + (tab === 'signup' ? 'active' : ''),
+                onClick: () => setTab('signup'),
+              },
+              'Sign up'
+            ),
+            React.createElement(
+              'button',
+              {
+                type: 'button',
+                className:
+                  'tab-btn ' + (tab === 'login' ? 'active' : ''),
+                onClick: () => setTab('login'),
+              },
+              'Login'
+            ),
+            React.createElement(
+              'button',
+              {
+                type: 'button',
+                className:
+                  'tab-btn ' + (tab === 'dashboard' ? 'active' : ''),
+                onClick: () => setTab('dashboard'),
+              },
+              'Dashboard (Phase 2 skeleton)'
+            )
+          ),
+          tab === 'signup' &&
+            React.createElement(SignupForm, { onDone: handleSignupDone }),
+          tab === 'login' &&
+            React.createElement(LoginForm, { onLoggedIn: handleLoggedIn }),
+          tab === 'dashboard' && React.createElement(DashboardSkeleton, null)
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(
+        React.createElement(App)
+      );
+    </script>
+  </body>
 </html>
