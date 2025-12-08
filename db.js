@@ -134,8 +134,20 @@ ensureColumns("pre_leads", [
   { name: "created_at", type: "INTEGER" }
 ]);
 
-// joins me client_id ensure karo (safety)
+// joins me tracking + client_id ensure karo (safety, older DB ke liye)
 ensureColumns("joins", [
+  { name: "ip", type: "TEXT" },
+  { name: "country", type: "TEXT" },
+  { name: "user_agent", type: "TEXT" },
+  { name: "device_type", type: "TEXT" },
+  { name: "browser", type: "TEXT" },
+  { name: "os", type: "TEXT" },
+  { name: "source", type: "TEXT" },
+  { name: "utm_source", type: "TEXT" },
+  { name: "utm_medium", type: "TEXT" },
+  { name: "utm_campaign", type: "TEXT" },
+  { name: "utm_content", type: "TEXT" },
+  { name: "utm_term", type: "TEXT" },
   { name: "client_id", type: "INTEGER" }
 ]);
 
