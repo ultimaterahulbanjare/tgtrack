@@ -896,14 +896,8 @@ app.get('/api/stats', (req, res) => {
 });
 
 // ----- HTML Dashboard: /dashboard -----
-
-app.get('/dashboard', requireAuth, (req, res) => {
+app.get('/dashboard', (req, res) => {
   try {
-    const user = req.user;
-    if (user.role === 'client') {
-      return res.redirect('/panel');
-    }
-
     const totalRow = db.prepare('SELECT COUNT(*) AS cnt FROM joins').get();
     const totalJoins = totalRow.cnt || 0;
 
@@ -913,13 +907,17 @@ app.get('/dashboard', requireAuth, (req, res) => {
     const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
 
     const todayRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?')
+      .prepare(
+        'SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?'
+      )
       .get(startOfDayTs, now);
     const todayJoins = todayRow.cnt || 0;
 
     const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
     const rows7 = db
-      .prepare('SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC')
+      .prepare(
+        'SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC'
+      )
       .all(sevenDaysAgoTs);
 
     const byDateMap = {};
@@ -932,55 +930,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
       .sort()
       .map((date) => ({ date, count: byDateMap[date] }));
 
-    const last7Total = last7Days.reduce((sum, d) => sum + (d.count || 0), 0);
-
-    // Client + channel level aggregates
-    const totalClientsRow = db.prepare('SELECT COUNT(*) AS cnt FROM clients').get();
-    const totalClients = totalClientsRow.cnt || 0;
-
-    const activeClientsRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM clients WHERE is_active = 1')
-      .get();
-    const activeClients = activeClientsRow.cnt || 0;
-
-    const pendingClientsRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM clients WHERE is_active = 0')
-      .get();
-    const pendingClients = pendingClientsRow.cnt || 0;
-
-    const inactiveClients = Math.max(totalClients - activeClients, 0);
-
-    const totalChannelsRow = db.prepare('SELECT COUNT(*) AS cnt FROM channels').get();
-    const totalChannels = totalChannelsRow.cnt || 0;
-
-    const activeChannelsRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM channels WHERE is_active = 1')
-      .get();
-    const activeChannels = activeChannelsRow.cnt || 0;
-
-    const planRows = db
-      .prepare(
-        `
-        SELECT
-          LOWER(COALESCE(plan, 'unknown')) AS plan,
-          COUNT(*) AS cnt
-        FROM clients
-        GROUP BY LOWER(COALESCE(plan, 'unknown'))
-        `
-      )
-      .all();
-
-    const planCounts = { single: 0, starter: 0, pro: 0, agency: 0, other: 0 };
-    for (const row of planRows) {
-      const p = row.plan || 'unknown';
-      const cnt = row.cnt || 0;
-      if (p === 'single') planCounts.single += cnt;
-      else if (p === 'starter') planCounts.starter += cnt;
-      else if (p === 'pro') planCounts.pro += cnt;
-      else if (p === 'agency') planCounts.agency += cnt;
-      else planCounts.other += cnt;
-    }
-
     const channels = db
       .prepare(
         `
@@ -991,32 +940,9 @@ app.get('/dashboard', requireAuth, (req, res) => {
         FROM joins
         GROUP BY channel_id, channel_title
         ORDER BY total DESC
-        LIMIT 20
-        `
+      `
       )
       .all();
-
-    const topClients7 = db
-      .prepare(
-        `
-        SELECT
-          c.id AS client_id,
-          c.name AS client_name,
-          c.slug AS slug,
-          c.plan AS plan,
-          COUNT(j.id) AS joins_7d
-        FROM clients c
-        LEFT JOIN channels ch ON ch.client_id = c.id
-        LEFT JOIN joins j
-          ON j.channel_id = ch.channel_id
-          AND j.joined_at >= ?
-          AND j.joined_at <= ?
-        GROUP BY c.id, c.name, c.slug, c.plan
-        ORDER BY joins_7d DESC
-        LIMIT 10
-        `
-      )
-      .all(sevenDaysAgoTs, now);
 
     const recentJoins = db
       .prepare(
@@ -1040,50 +966,32 @@ app.get('/dashboard', requireAuth, (req, res) => {
         FROM joins
         ORDER BY joined_at DESC
         LIMIT 50
-        `
+      `
       )
       .all();
 
-    // Owner super dashboard HTML
+    // Simple HTML UI
     res.send(`
       <!DOCTYPE html>
       <html lang="en">
       <head>
         <meta charset="UTF-8" />
-        <title>UTS Owner Super Dashboard</title>
+        <title>Telegram Funnel Stats</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <style>
           body {
             font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: #020617;
+            background: #0f172a;
             color: #e5e7eb;
             padding: 24px;
-            margin: 0;
           }
           .container {
-            max-width: 1200px;
+            max-width: 1100px;
             margin: 0 auto;
           }
           h1 {
-            font-size: 22px;
-            margin-bottom: 4px;
-          }
-          .sub {
-            font-size: 12px;
-            color: #9ca3af;
-            margin-bottom: 18px;
-          }
-          .topbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 18px;
-          }
-          .topbar a {
-            color: #38bdf8;
-            font-size: 12px;
-            text-decoration: none;
-            margin-left: 12px;
+            font-size: 24px;
+            margin-bottom: 16px;
           }
           .cards {
             display: flex;
@@ -1092,251 +1000,147 @@ app.get('/dashboard', requireAuth, (req, res) => {
             margin-bottom: 24px;
           }
           .card {
-            background: #0f172a;
+            background: #111827;
             border-radius: 12px;
-            padding: 14px 16px;
+            padding: 16px 18px;
             flex: 1 1 180px;
             min-width: 180px;
-            border: 1px solid #1f2937;
           }
           .card h2 {
-            font-size: 13px;
+            font-size: 14px;
             color: #9ca3af;
-            margin-bottom: 4px;
+            margin-bottom: 8px;
           }
           .card .value {
             font-size: 22px;
             font-weight: 600;
           }
-          .card .hint {
-            font-size: 11px;
-            color: #6b7280;
-            margin-top: 4px;
-          }
-          .grid-2 {
-            display: grid;
-            grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
-            gap: 18px;
-            margin-bottom: 24px;
-          }
-          .section {
-            background: #020617;
-            border-radius: 14px;
-            padding: 18px 18px;
-            border: 1px solid #1f2937;
-            box-shadow: 0 18px 40px rgba(0,0,0,0.6);
-          }
-          .section-title {
-            font-size: 15px;
-            margin-bottom: 8px;
-          }
-          .section-sub {
-            font-size: 12px;
-            color: #6b7280;
-            margin-bottom: 10px;
-          }
           table {
             width: 100%;
             border-collapse: collapse;
-            margin-bottom: 8px;
+            margin-bottom: 24px;
           }
           th, td {
-            padding: 6px 8px;
+            padding: 8px 10px;
             border-bottom: 1px solid #1f2937;
             font-size: 12px;
-            white-space: nowrap;
           }
           th {
             text-align: left;
             color: #9ca3af;
+            white-space: nowrap;
+          }
+          td {
+            white-space: nowrap;
           }
           tr:hover {
-            background: #020617;
+            background: #111827;
+          }
+          .section-title {
+            font-size: 16px;
+            margin: 16px 0 8px;
           }
           .muted {
             color: #6b7280;
             font-size: 12px;
           }
-          code {
-            background: #020617;
-            padding: 2px 4px;
-            border-radius: 4px;
-            font-size: 11px;
+          .nowrap {
+            white-space: nowrap;
           }
           @media (max-width: 900px) {
-            .grid-2 {
-              grid-template-columns: minmax(0, 1fr);
-            }
             table {
               display: block;
               overflow-x: auto;
+            }
+          }
+          @media (max-width: 600px) {
+            .cards {
+              flex-direction: column;
             }
           }
         </style>
       </head>
       <body>
         <div class="container">
-          <div class="topbar">
-            <div>
-              <h1>Owner Super Dashboard</h1>
-              <div class="sub">Global view across all clients, channels and joins.</div>
-            </div>
-            <div>
-              <span class="sub">Logged in as ${user.email}</span>
-              <a href="/panel">Workspace</a>
-              <a href="/logout">Logout</a>
-            </div>
-          </div>
+          <h1>Telegram Funnel Stats 📊</h1>
 
           <div class="cards">
             <div class="card">
-              <h2>Total joins (all time)</h2>
+              <h2>Total Joins</h2>
               <div class="value">${totalJoins}</div>
             </div>
             <div class="card">
-              <h2>Today joins</h2>
+              <h2>Today Joins</h2>
               <div class="value">${todayJoins}</div>
             </div>
-            <div class="card">
-              <h2>Last 7 days joins</h2>
-              <div class="value">${last7Total}</div>
-            </div>
-            <div class="card">
-              <h2>Clients</h2>
-              <div class="value">${totalClients}</div>
-              <div class="hint">Active: ${activeClients} · Inactive: ${inactiveClients} · Pending: ${pendingClients}</div>
-            </div>
-            <div class="card">
-              <h2>Channels</h2>
-              <div class="value">${activeChannels}/${totalChannels}</div>
-              <div class="hint">Active / total</div>
-            </div>
           </div>
 
-          <div class="grid-2">
-            <div class="section">
-              <div class="section-title">Last 7 days – timeline</div>
-              <div class="section-sub">Daily joins across all clients.</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Joins</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${
-                    last7Days.length === 0
-                      ? `<tr><td colspan="2" class="muted">No data yet</td></tr>`
-                      : last7Days
-                          .map(
-                            (d) => `
-                      <tr>
-                        <td>${d.date}</td>
-                        <td>${d.count}</td>
-                      </tr>`
-                          )
-                          .join('')
-                  }
-                </tbody>
-              </table>
-            </div>
 
-            <div class="section">
-              <div class="section-title">Clients by plan</div>
-              <div class="section-sub">How many workspaces are on each tier.</div>
-              <table>
-                <thead>
+          <div>
+            <div class="section-title">Last 7 Days</div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Joins</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${
+                  last7Days.length === 0
+                    ? `<tr><td colspan="2" class="muted">No data yet</td></tr>`
+                    : last7Days
+                        .map(
+                          (d) => `
                   <tr>
-                    <th>Plan</th>
-                    <th>Clients</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr><td>Single</td><td>${planCounts.single}</td></tr>
-                  <tr><td>Starter</td><td>${planCounts.starter}</td></tr>
-                  <tr><td>Pro</td><td>${planCounts.pro}</td></tr>
-                  <tr><td>Agency</td><td>${planCounts.agency}</td></tr>
-                  <tr><td>Other / unset</td><td>${planCounts.other}</td></tr>
-                </tbody>
-              </table>
-            </div>
+                    <td>${d.date}</td>
+                    <td>${d.count}</td>
+                  </tr>`
+                        )
+                        .join('')
+                }
+              </tbody>
+            </table>
           </div>
 
-          <div class="grid-2">
-            <div class="section">
-              <div class="section-title">Top clients (last 7 days)</div>
-              <div class="section-sub">Workspaces generating the most joins in the last 7 days.</div>
-              <table>
-                <thead>
+          <div>
+            <div class="section-title">By Channel</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Channel Title</th>
+                  <th>Channel ID</th>
+                  <th>Total Joins</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${
+                  channels.length === 0
+                    ? `<tr><td colspan="3" class="muted">No data yet</td></tr>`
+                    : channels
+                        .map(
+                          (c) => `
                   <tr>
-                    <th>Client</th>
-                    <th>Plan</th>
-                    <th>Slug</th>
-                    <th>Joins (7d)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${
-                    topClients7.length === 0
-                      ? `<tr><td colspan="4" class="muted">No data yet</td></tr>`
-                      : topClients7
-                          .map(
-                            (c) => `
-                      <tr>
-                        <td>${c.client_name || '(no name)'}</td>
-                        <td>${c.plan || ''}</td>
-                        <td><code>${c.slug || ''}</code></td>
-                        <td>${c.joins_7d || 0}</td>
-                      </tr>`
-                          )
-                          .join('')
-                  }
-                </tbody>
-              </table>
-            </div>
-
-            <div class="section">
-              <div class="section-title">Top channels (all time)</div>
-              <div class="section-sub">Best-performing channels by total joins.</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Channel</th>
-                    <th>Channel ID</th>
-                    <th>Total joins</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${
-                    channels.length === 0
-                      ? `<tr><td colspan="3" class="muted">No data yet</td></tr>`
-                      : channels
-                          .map(
-                            (ch) => `
-                      <tr>
-                        <td>${ch.channel_title || ''}</td>
-                        <td>${ch.channel_id || ''}</td>
-                        <td>${ch.total || 0}</td>
-                      </tr>`
-                          )
-                          .join('')
-                  }
-                </tbody>
-              </table>
-            </div>
+                    <td>${c.channel_title || '(no title)'}</td>
+                    <td>${c.channel_id}</td>
+                    <td>${c.total}</td>
+                  </tr>`
+                        )
+                        .join('')
+                }
+              </tbody>
+            </table>
           </div>
 
-          <div class="section">
-            <div class="section-title">Recent joins (tracking details)</div>
-            <div class="section-sub">Last 50 approved joins with device, geo & UTM information.</div>
+          <div>
+            <div class="section-title">Recent Joins (Tracking Details)</div>
             <table>
               <thead>
                 <tr>
                   <th>Time</th>
                   <th>Username</th>
                   <th>Channel</th>
-                  <th>Channel ID</th>
                   <th>IP</th>
                   <th>Country</th>
                   <th>Device</th>
@@ -1353,39 +1157,36 @@ app.get('/dashboard', requireAuth, (req, res) => {
               <tbody>
                 ${
                   recentJoins.length === 0
-                    ? `<tr><td colspan="15" class="muted">No joins yet</td></tr>`
+                    ? `<tr><td colspan="14" class="muted">No joins yet</td></tr>`
                     : recentJoins
                         .map((j) => {
-                          const dt = new Date(j.joined_at * 1000)
-                            .toISOString()
-                            .replace('T', ' ')
-                            .substring(0, 19);
+                          const dt = new Date(j.joined_at * 1000).toISOString().replace('T',' ').substring(0,19);
                           return `
-                    <tr>
-                      <td>${dt}</td>
-                      <td>${j.telegram_username || ''}</td>
-                      <td>${j.channel_title || ''}</td>
-                      <td>${j.channel_id || ''}</td>
-                      <td>${j.ip || ''}</td>
-                      <td>${j.country || ''}</td>
-                      <td>${j.device_type || ''}</td>
-                      <td>${j.browser || ''}</td>
-                      <td>${j.os || ''}</td>
-                      <td>${j.source || ''}</td>
-                      <td>${j.utm_source || ''}</td>
-                      <td>${j.utm_medium || ''}</td>
-                      <td>${j.utm_campaign || ''}</td>
-                      <td>${j.utm_content || ''}</td>
-                      <td>${j.utm_term || ''}</td>
-                    </tr>`;
+                  <tr>
+                    <td class="nowrap">${dt}</td>
+                    <td>${j.telegram_username || '(no username)'}</td>
+                    <td>${j.channel_title || ''}</td>
+                    <td>${j.ip || ''}</td>
+                    <td>${j.country || ''}</td>
+                    <td>${j.device_type || ''}</td>
+                    <td>${j.browser || ''}</td>
+                    <td>${j.os || ''}</td>
+                    <td>${j.source || ''}</td>
+                    <td>${j.utm_source || ''}</td>
+                    <td>${j.utm_medium || ''}</td>
+                    <td>${j.utm_campaign || ''}</td>
+                    <td>${j.utm_content || ''}</td>
+                    <td>${j.utm_term || ''}</td>
+                  </tr>`;
                         })
                         .join('')
                 }
               </tbody>
             </table>
-            <div class="muted">
-              Super dashboard · designed to feel like a full analytics tool for your Telegram funnels.
-            </div>
+          </div>
+
+          <div class="muted">
+            Simple v2 dashboard – tracking with IP, device, browser, OS, source & UTM.
           </div>
         </div>
       </body>
@@ -1396,6 +1197,8 @@ app.get('/dashboard', requireAuth, (req, res) => {
     res.status(500).send('Internal error');
   }
 });
+
+
 // ---------- LOGIN + LOGOUT + PANEL (SaaS UI) ----------
 
 // GET /login
@@ -2047,12 +1850,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       .sort()
       .map((date) => ({ date, count: byDateMap[date] }));
 
-    const errorCode = req.query.error || '';
-    let errorHtml = '';
-    if (errorCode === 'chlimit') {
-      errorHtml = '<div style="margin-top:8px;color:#f97373;font-size:12px;">Channel limit reached for this plan. Please remove an existing channel or upgrade the plan.</div>';
-    }
-
     // By channel stats (from joins)
     const byChannelStats = db
       .prepare(
@@ -2322,7 +2119,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             <div class="muted">
               Public key: <code>${client.public_key || ''}</code> · Secret key: <code>${client.secret_key || ''}</code>
             </div>
-            ${errorHtml}
           </div>
         </div>
 
@@ -2632,26 +2428,6 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         existing.id
       );
     } else {
-      // Enforce plan-based channel limit for this client (only when inserting new channel)
-      let maxChannels = client.max_channels;
-      if (!maxChannels || Number.isNaN(Number(maxChannels))) {
-        const plan = (client.plan || '').toLowerCase();
-        if (plan === 'single') maxChannels = 1;
-        else if (plan === 'starter') maxChannels = 3;
-        else if (plan === 'pro') maxChannels = 5;
-        else if (plan === 'agency') maxChannels = 10;
-      }
-
-      if (maxChannels && Number(maxChannels) > 0) {
-        const rowCount = db
-          .prepare('SELECT COUNT(*) AS cnt FROM channels WHERE client_id = ? AND is_active = 1')
-          .get(clientId);
-        const currentActive = rowCount && rowCount.cnt ? rowCount.cnt : 0;
-        if (currentActive >= Number(maxChannels)) {
-          return res.redirect('/panel/client/' + clientId + '?error=chlimit');
-        }
-      }
-
       db.prepare(
         `
         INSERT INTO channels (
