@@ -323,7 +323,10 @@
             else if (data.status === 'rejected') setMsg(data.message || 'Account rejected.', 'err');
             else setMsg(data.error || 'Login failed.', 'err');
           } else {
-            setMsg('Logged in ✅', 'ok');
+            setMsg('Logged in ✅ Redirecting to dashboard…', 'ok');
+            setTimeout(() => {
+              window.location.href = '/panel';
+            }, 800);
           }
         } catch (err) {
           console.error(err);
