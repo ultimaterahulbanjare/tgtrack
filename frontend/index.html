@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>UTS Phase 1 – Auth & Owner Panel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- React & Babel CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0b1220;
+        color: #e5e7eb;
+      }
+      .app-shell {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px 16px 40px;
+      }
+      h1 {
+        font-size: 26px;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 16px 0 8px;
+      }
+      .muted {
+        color: #9ca3af;
+        font-size: 13px;
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-top: 20px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      .tab-btn {
+        padding: 6px 12px;
+        border-radius: 999px;
+        border: 1px solid #4b5563;
+        background: transparent;
+        color: #e5e7eb;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .tab-btn.active {
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: #0b1120;
+        border-color: transparent;
+        font-weight: 600;
+      }
+      .card {
+        border-radius: 16px;
+        border: 1px solid #1f2937;
+        background: radial-gradient(circle at top left, rgba(34,197,94,0.08), transparent 55%);
+        padding: 18px 16px 16px;
+        margin-bottom: 18px;
+      }
+      .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .pill {
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 11px;
+        border: 1px solid #374151;
+        color: #9ca3af;
+      }
+      .plans {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+        margin: 8px 0 14px;
+      }
+      .plan-card {
+        border-radius: 14px;
+        border: 1px solid #1f2937;
+        padding: 10px 10px 12px;
+        cursor: pointer;
+        background: #020617;
+      }
+      .plan-card.selected {
+        border-color: #22c55e;
+        box-shadow: 0 0 0 1px rgba(34,197,94,0.4);
+        background: radial-gradient(circle at top, rgba(34,197,94,0.12), #020617 60%);
+      }
+      .plan-name {
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 2px;
+      }
+      .plan-meta {
+        font-size: 12px;
+        color: #9ca3af;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(34,197,94,0.1);
+        color: #bbf7d0;
+        margin-top: 4px;
+      }
+      form {
+        display: grid;
+        gap: 10px;
+        margin-top: 4px;
+      }
+      label {
+        font-size: 13px;
+        margin-bottom: 3px;
+        display: block;
+      }
+      input {
+        width: 100%;
+        padding: 7px 9px;
+        border-radius: 10px;
+        border: 1px solid #374151;
+        background: #020617;
+        color: #e5e7eb;
+        font-size: 13px;
+      }
+      input:focus {
+        outline: none;
+        border-color: #22c55e;
+        box-shadow: 0 0 0 1px rgba(34,197,94,0.3);
+      }
+      button.primary {
+        margin-top: 4px;
+        padding: 8px 12px;
+        border-radius: 10px;
+        border: none;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: #02140a;
+      }
+      button.secondary {
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid #374151;
+        background: transparent;
+        cursor: pointer;
+        font-size: 12px;
+        color: #e5e7eb;
+      }
+      .status {
+        font-size: 12px;
+        margin-top: 6px;
+      }
+      .status.ok {
+        color: #4ade80;
+      }
+      .status.err {
+        color: #f97373;
+      }
+      .status.neutral {
+        color: #9ca3af;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 6px;
+        font-size: 12px;
+      }
+      th, td {
+        padding: 6px 4px;
+        border-bottom: 1px solid #111827;
+        text-align: left;
+      }
+      th {
+        font-weight: 500;
+        color: #9ca3af;
+        font-size: 11px;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      .tag {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        border: 1px solid #374151;
+        color: #d1d5db;
+      }
+      .layout-two {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        gap: 16px;
+      }
+      @media (max-width: 768px) {
+        .layout-two {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect } = React;
+
+      const API_BASE = ''; // same origin backend
+
+      function useStatus() {
+        const [msg, setMsg] = useState('');
+        const [type, setType] = useState('neutral');
+        const push = (message, t = 'neutral') => {
+          setMsg(message);
+          setType(t);
+        };
+        return [msg, type, push];
+      }
+
+      function SignupCard() {
+        const [plan, setPlan] = useState('starter');
+        const [form, setForm] = useState({ name: '', email: '', password: '' });
+        const [status, statusType, setStatus] = useStatus();
+        const [loading, setLoading] = useState(false);
+
+        const plans = [
+          { id: 'single', name: 'Single', channels: 1, note: 'Perfect for 1 channel', popular: false },
+          { id: 'starter', name: 'Starter', channels: 3, note: 'For small teams', popular: true },
+          { id: 'pro', name: 'Pro', channels: 5, note: 'Scaling agencies', popular: false },
+          { id: 'agency', name: 'Agency', channels: 10, note: 'Big agency setup', popular: false }
+        ];
+
+        const onChange = (e) => {
+          setForm({ ...form, [e.target.name]: e.target.value });
+        };
+
+        const onSubmit = async (e) => {
+          e.preventDefault();
+          setStatus('', 'neutral');
+          if (!form.name || !form.email || !form.password) {
+            setStatus('Please fill all fields.', 'err');
+            return;
+          }
+          setLoading(true);
+          try {
+            const res = await fetch(API_BASE + '/api/auth/signup', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: form.name,
+                email: form.email,
+                password: form.password,
+                plan
+              })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+              setStatus(data.error || 'Signup failed', 'err');
+            } else {
+              setStatus('Account created! Wait for owner approval.', 'ok');
+            }
+          } catch (err) {
+            console.error(err);
+            setStatus('Network error during signup.', 'err');
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        return (
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Client signup</h2>
+                <div className="muted">Select a plan and create your workspace.</div>
+              </div>
+              <div className="pill">Phase 1 · Auth</div>
+            </div>
+
+            <div className="plans">
+              {plans.map((p) => (
+                <div
+                  key={p.id}
+                  className={'plan-card ' + (plan === p.id ? 'selected' : '')}
+                  onClick={() => setPlan(p.id)}
+                >
+                  <div className="plan-name">
+                    {p.name}
+                    {p.popular && <span className="badge" style={{ marginLeft: 6 }}>Most popular</span>}
+                  </div>
+                  <div className="plan-meta">Up to {p.channels} channels</div>
+                  <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>{p.note}</div>
+                </div>
+              ))}
+            </div>
+
+            <form onSubmit={onSubmit}>
+              <div>
+                <label>Full name / agency name</label>
+                <input
+                  name="name"
+                  value={form.name}
+                  onChange={onChange}
+                  placeholder="e.g. Rahul Trading Signals"
+                />
+              </div>
+              <div>
+                <label>Email</label>
+                <input
+                  name="email"
+                  type="email"
+                  value={form.email}
+                  onChange={onChange}
+                  placeholder="you@example.com"
+                />
+              </div>
+              <div>
+                <label>Password</label>
+                <input
+                  name="password"
+                  type="password"
+                  value={form.password}
+                  onChange={onChange}
+                  placeholder="••••••••"
+                />
+              </div>
+              <button className="primary" type="submit" disabled={loading}>
+                {loading ? 'Creating account…' : 'Create account'}
+              </button>
+            </form>
+
+            {status && (
+              <div className={'status ' + statusType}>
+                {status}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function ClientLoginCard({ onLoggedIn }) {
+        const [form, setForm] = useState({ email: '', password: '' });
+        const [status, statusType, setStatus] = useStatus();
+        const [loading, setLoading] = useState(false);
+
+        const onChange = (e) => {
+          setForm({ ...form, [e.target.name]: e.target.value });
+        };
+
+        const onSubmit = async (e) => {
+          e.preventDefault();
+          setStatus('', 'neutral');
+          if (!form.email || !form.password) {
+            setStatus('Please fill email & password.', 'err');
+            return;
+          }
+          setLoading(true);
+          try {
+            const res = await fetch(API_BASE + '/api/auth/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(form)
+            });
+            const data = await res.json();
+            if (!data.success) {
+              if (data.status === 'pending') {
+                setStatus(data.message || 'Account pending approval.', 'neutral');
+              } else if (data.status === 'rejected') {
+                setStatus(data.message || 'Account rejected.', 'err');
+              } else {
+                setStatus(data.error || 'Login failed.', 'err');
+              }
+            } else {
+              setStatus('Logged in.', 'ok');
+              if (onLoggedIn) {
+                onLoggedIn(data.user);
+              }
+            }
+          } catch (err) {
+            console.error(err);
+            setStatus('Network error during login.', 'err');
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        return (
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Client login</h2>
+                <div className="muted">Once approved, use your email to access the dashboard.</div>
+              </div>
+              <div className="pill">Client</div>
+            </div>
+
+            <form onSubmit={onSubmit}>
+              <div>
+                <label>Email</label>
+                <input
+                  name="email"
+                  type="email"
+                  value={form.email}
+                  onChange={onChange}
+                  placeholder="you@example.com"
+                />
+              </div>
+              <div>
+                <label>Password</label>
+                <input
+                  name="password"
+                  type="password"
+                  value={form.password}
+                  onChange={onChange}
+                  placeholder="••••••••"
+                />
+              </div>
+              <button className="primary" type="submit" disabled={loading}>
+                {loading ? 'Signing in…' : 'Login'}
+              </button>
+            </form>
+
+            {status && (
+              <div className={'status ' + statusType}>
+                {status}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function OwnerLoginCard({ onOwnerLoggedIn }) {
+        const [form, setForm] = useState({ email: '', password: '' });
+        const [status, statusType, setStatus] = useStatus();
+        const [loading, setLoading] = useState(false);
+
+        const onChange = (e) => {
+          setForm({ ...form, [e.target.name]: e.target.value });
+        };
+
+        const onSubmit = async (e) => {
+          e.preventDefault();
+          setStatus('', 'neutral');
+          if (!form.email || !form.password) {
+            setStatus('Please fill email & password.', 'err');
+            return;
+          }
+          setLoading(true);
+          try {
+            const res = await fetch(API_BASE + '/api/owner/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(form)
+            });
+            const data = await res.json();
+            if (!data.success) {
+              setStatus(data.error || 'Owner login failed.', 'err');
+            } else {
+              setStatus('Owner logged in.', 'ok');
+              if (onOwnerLoggedIn) {
+                onOwnerLoggedIn(data.user);
+              }
+            }
+          } catch (err) {
+            console.error(err);
+            setStatus('Network error during owner login.', 'err');
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        return (
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Owner / admin login</h2>
+                <div className="muted">Use the seeded admin account to approve clients.</div>
+              </div>
+              <div className="pill">Owner</div>
+            </div>
+
+            <form onSubmit={onSubmit}>
+              <div>
+                <label>Email</label>
+                <input
+                  name="email"
+                  type="email"
+                  value={form.email}
+                  onChange={onChange}
+                  placeholder="admin@example.com"
+                />
+              </div>
+              <div>
+                <label>Password</label>
+                <input
+                  name="password"
+                  type="password"
+                  value={form.password}
+                  onChange={onChange}
+                  placeholder="Admin@123"
+                />
+              </div>
+              <button className="primary" type="submit" disabled={loading}>
+                {loading ? 'Signing in…' : 'Login as owner'}
+              </button>
+            </form>
+
+            {status && (
+              <div className={'status ' + statusType}>
+                {status}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function OwnerPendingClientsCard() {
+        const [rows, setRows] = useState([]);
+        const [status, statusType, setStatus] = useStatus();
+        const [loading, setLoading] = useState(false);
+
+        const fetchPending = async () => {
+          setLoading(true);
+          setStatus('', 'neutral');
+          try {
+            const res = await fetch(API_BASE + '/api/owner/clients/pending');
+            const data = await res.json();
+            if (!data.success) {
+              setStatus(data.error || 'Could not load pending clients.', 'err');
+            } else {
+              setRows(data.clients || []);
+            }
+          } catch (err) {
+            console.error(err);
+            setStatus('Network error while loading pending clients.', 'err');
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        useEffect(() => {
+          fetchPending();
+        }, []);
+
+        const act = async (id, mode) => {
+          try {
+            const res = await fetch(API_BASE + `/api/owner/clients/${id}/${mode}`, {
+              method: 'POST'
+            });
+            const data = await res.json();
+            if (!data.success) {
+              setStatus(data.error || `Failed to ${mode} client.`, 'err');
+            } else {
+              setStatus(`Client ${mode}d.`, 'ok');
+              setRows((prev) => prev.filter((r) => r.id !== id));
+            }
+          } catch (err) {
+            console.error(err);
+            setStatus('Network error.', 'err');
+          }
+        };
+
+        return (
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Pending client approvals</h2>
+                <div className="muted">Approve accounts after checking payment / eligibility.</div>
+              </div>
+              <button className="secondary" type="button" onClick={fetchPending}>
+                Refresh
+              </button>
+            </div>
+
+            {rows.length === 0 && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                No pending clients right now.
+              </div>
+            )}
+
+            {rows.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Slug</th>
+                    <th>Plan</th>
+                    <th>Max channels</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.id}>
+                      <td>{r.id}</td>
+                      <td>{r.name}</td>
+                      <td>{r.slug}</td>
+                      <td><span className="tag">{r.plan}</span></td>
+                      <td>{r.max_channels}</td>
+                      <td>{r.created_at || '-'}</td>
+                      <td>
+                        <button
+                          className="secondary"
+                          style={{ marginRight: 6, fontSize: 11 }}
+                          type="button"
+                          onClick={() => act(r.id, 'approve')}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="secondary"
+                          style={{ fontSize: 11, borderColor: '#4b5563', color: '#fca5a5' }}
+                          type="button"
+                          onClick={() => act(r.id, 'reject')}
+                        >
+                          Reject
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {status && <div className={'status ' + statusType}>{status}</div>}
+          </div>
+        );
+      }
+
+      function ClientMeCard() {
+        const [info, setInfo] = useState(null);
+        const [status, statusType, setStatus] = useStatus();
+        const [loading, setLoading] = useState(false);
+
+        const loadMe = async () => {
+          setLoading(true);
+          setStatus('', 'neutral');
+          try {
+            const res = await fetch(API_BASE + '/api/auth/me');
+            const data = await res.json();
+            if (!data.success) {
+              setStatus(data.error || 'Not logged in.', 'err');
+            } else {
+              setInfo(data.user);
+              setStatus('Session OK.', 'ok');
+            }
+          } catch (err) {
+            console.error(err);
+            setStatus('Network error while checking session.', 'err');
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        useEffect(() => {
+          loadMe();
+        }, []);
+
+        return (
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Client session preview</h2>
+                <div className="muted">This will be the base for your Phase 2 dashboard.</div>
+              </div>
+              <button className="secondary" type="button" onClick={loadMe}>
+                Refresh
+              </button>
+            </div>
+
+            {info ? (
+              <div style={{ fontSize: 13 }}>
+                <div><strong>Name:</strong> {info.name}</div>
+                <div><strong>Email:</strong> {info.email}</div>
+                <div><strong>Plan:</strong> {info.plan} (max {info.max_channels} channels)</div>
+                <div><strong>Client ID:</strong> {info.client_id}</div>
+                <div><strong>Slug:</strong> {info.slug}</div>
+              </div>
+            ) : (
+              <div className="muted" style={{ fontSize: 12 }}>
+                Not logged in yet. Login from the Client login tab first.
+              </div>
+            )}
+
+            {status && <div className={'status ' + statusType}>{status}</div>}
+          </div>
+        );
+      }
+
+      function App() {
+        const [tab, setTab] = useState('signup');
+
+        return (
+          <div className="app-shell">
+            <h1>Universal Tracking – Phase 1</h1>
+            <div className="muted">
+              Auth + plan selection + owner approval layer, built on top of your existing backend.
+            </div>
+
+            <div className="tabs">
+              <button
+                className={'tab-btn ' + (tab === 'signup' ? 'active' : '')}
+                onClick={() => setTab('signup')}
+              >
+                1) Client signup
+              </button>
+              <button
+                className={'tab-btn ' + (tab === 'client-login' ? 'active' : '')}
+                onClick={() => setTab('client-login')}
+              >
+                2) Client login
+              </button>
+              <button
+                className={'tab-btn ' + (tab === 'client-me' ? 'active' : '')}
+                onClick={() => setTab('client-me')}
+              >
+                3) Client session preview
+              </button>
+              <button
+                className={'tab-btn ' + (tab === 'owner' ? 'active' : '')}
+                onClick={() => setTab('owner')}
+              >
+                4) Owner · Approvals
+              </button>
+            </div>
+
+            {tab === 'signup' && <SignupCard />}
+
+            {tab === 'client-login' && (
+              <div className="layout-two">
+                <ClientLoginCard />
+                <ClientMeCard />
+              </div>
+            )}
+
+            {tab === 'client-me' && <ClientMeCard />}
+
+            {tab === 'owner' && (
+              <div className="layout-two">
+                <OwnerLoginCard />
+                <OwnerPendingClientsCard />
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
