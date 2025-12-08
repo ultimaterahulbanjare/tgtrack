@@ -7,7 +7,6 @@ const crypto = require('crypto');
 const db = require('./db'); // SQLite (better-sqlite3) DB connection
 const geoip = require('geoip-lite');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 
@@ -15,8 +14,9 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-
+// Serve frontend React panel
 app.use('/frontend', express.static(path.join(__dirname, 'frontend')));
+
 
 // 🔹 CORS allow for LP → backend calls
 app.use((req, res, next) => {
@@ -136,6 +136,24 @@ function requireAuth(req, res, next) {
   if (!user) {
     res.clearCookie('auth');
     return res.redirect('/login');
+  }
+
+  req.user = user;
+  next();
+}
+
+function requireAuthApi(req, res, next) {
+  const token = req.cookies && req.cookies.auth;
+  const userId = verifyAuthToken(token);
+
+  if (!userId) {
+    return res.status(401).json({ success: false, error: 'Not authenticated' });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) {
+    res.clearCookie('auth');
+    return res.status(401).json({ success: false, error: 'Invalid session' });
   }
 
   req.user = user;
@@ -683,7 +701,10 @@ const externalIdHash = hashSha256(String(user.id));
   const res = await axios.post(url, payload);
   console.log('Meta CAPI response:', res.data);
 
+  
   // ✅ Joins table me log karein – ID ko insert nahi kar rahe, SQLite auto increment karega
+  const clientIdForJoin = channelConfig.client_id || null;
+
   db.prepare(
     `
     INSERT INTO joins 
@@ -705,9 +726,10 @@ const externalIdHash = hashSha256(String(user.id));
         utm_medium,
         utm_campaign,
         utm_content,
-        utm_term
+        utm_term,
+        client_id
       )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   ).run(
     String(user.id),
@@ -727,1036 +749,12 @@ const externalIdHash = hashSha256(String(user.id));
     utmMediumForThisLead || null,
     utmCampaignForThisLead || null,
     utmContentForThisLead || null,
-    utmTermForThisLead || null
+    utmTermForThisLead || null,
+    clientIdForJoin
   );
 
   console.log('✅ Join stored in DB for user:', user.id);
-}
 
-// ----- ADMIN: update channel config (pixel, LP, client, deep link) -----
-app.post('/admin/update-channel', (req, res) => {
-  try {
-    const {
-      admin_key,
-      telegram_chat_id,
-      pixel_id,
-      lp_url,
-      client_id,
-      deep_link,
-    } = req.body;
-
-    if (admin_key !== ADMIN_KEY) {
-      return res.status(401).json({ ok: false, error: 'Unauthorized' });
-    }
-
-    if (!telegram_chat_id) {
-      return res
-        .status(400)
-        .json({ ok: false, error: 'telegram_chat_id required' });
-    }
-
-    const channel = db
-      .prepare('SELECT * FROM channels WHERE telegram_chat_id = ?')
-      .get(String(telegram_chat_id));
-
-    if (!channel) {
-      return res
-        .status(404)
-        .json({ ok: false, error: 'Channel not found' });
-    }
-
-    const newPixel = pixel_id || channel.pixel_id;
-    const newLp = lp_url || channel.lp_url;
-    const newClientId = client_id || channel.client_id;
-    const newDeepLink = deep_link || channel.deep_link;
-
-    db.prepare(
-      `
-      UPDATE channels
-      SET pixel_id = ?, lp_url = ?, client_id = ?, deep_link = ?
-      WHERE telegram_chat_id = ?
-    `
-    ).run(
-      newPixel,
-      newLp,
-      newClientId,
-      newDeepLink,
-      String(telegram_chat_id)
-    );
-
-    return res.json({
-      ok: true,
-      message: 'Channel updated',
-      data: {
-        telegram_chat_id,
-        pixel_id: newPixel,
-        lp_url: newLp,
-        client_id: newClientId,
-        deep_link: newDeepLink,
-      },
-    });
-  } catch (err) {
-    console.error('❌ Error in /admin/update-channel:', err);
-    res.status(500).json({ ok: false, error: 'Internal error' });
-  }
-});
-
-// ----- JSON Stats API: /api/stats -----
-app.get('/api/stats', (req, res) => {
-  try {
-    // Total joins
-    const totalRow = db.prepare('SELECT COUNT(*) AS cnt FROM joins').get();
-    const totalJoins = totalRow.cnt || 0;
-
-    // Today joins
-    const now = Math.floor(Date.now() / 1000);
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
-
-    const todayRow = db
-      .prepare(
-        'SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?'
-      )
-      .get(startOfDayTs, now);
-    const todayJoins = todayRow.cnt || 0;
-
-    // Last 7 days breakdown
-    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
-    const rows7 = db
-      .prepare(
-        'SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC'
-      )
-      .all(sevenDaysAgoTs);
-
-    const byDateMap = {};
-    for (const r of rows7) {
-      const dateKey = formatDateYYYYMMDD(r.joined_at);
-      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
-    }
-
-    const last7Days = Object.keys(byDateMap)
-      .sort()
-      .map((date) => ({ date, count: byDateMap[date] }));
-
-    // By channel
-    const channels = db
-      .prepare(
-        `
-        SELECT 
-          channel_id,
-          channel_title,
-          COUNT(*) AS total
-        FROM joins
-        GROUP BY channel_id, channel_title
-        ORDER BY total DESC
-      `
-      )
-      .all();
-
-    // Recent joins with tracking (for UI)
-    const recentJoins = db
-      .prepare(
-        `
-        SELECT
-          telegram_username,
-          channel_title,
-          channel_id,
-          joined_at,
-          ip,
-          country,
-          device_type,
-          browser,
-          os,
-          source,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term
-        FROM joins
-        ORDER BY joined_at DESC
-        LIMIT 50
-      `
-      )
-      .all();
-
-    res.json({
-      ok: true,
-      total_joins: totalJoins,
-      today_joins: todayJoins,
-      last_7_days: last7Days,
-      by_channel: channels,
-      recent_joins: recentJoins,
-    });
-  } catch (err) {
-    console.error('❌ Error in /api/stats:', err);
-    res.status(500).json({ ok: false, error: 'Internal error' });
-  }
-});
-
-// ----- HTML Dashboard: /dashboard -----
-app.get('/dashboard', (req, res) => {
-  try {
-    const totalRow = db.prepare('SELECT COUNT(*) AS cnt FROM joins').get();
-    const totalJoins = totalRow.cnt || 0;
-
-    const now = Math.floor(Date.now() / 1000);
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
-
-    const todayRow = db
-      .prepare(
-        'SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?'
-      )
-      .get(startOfDayTs, now);
-    const todayJoins = todayRow.cnt || 0;
-
-    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
-    const rows7 = db
-      .prepare(
-        'SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC'
-      )
-      .all(sevenDaysAgoTs);
-
-    const byDateMap = {};
-    for (const r of rows7) {
-      const dateKey = formatDateYYYYMMDD(r.joined_at);
-      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
-    }
-
-    const last7Days = Object.keys(byDateMap)
-      .sort()
-      .map((date) => ({ date, count: byDateMap[date] }));
-
-    const channels = db
-      .prepare(
-        `
-        SELECT 
-          channel_id,
-          channel_title,
-          COUNT(*) AS total
-        FROM joins
-        GROUP BY channel_id, channel_title
-        ORDER BY total DESC
-      `
-      )
-      .all();
-
-    const recentJoins = db
-      .prepare(
-        `
-        SELECT
-          telegram_username,
-          channel_title,
-          channel_id,
-          joined_at,
-          ip,
-          country,
-          device_type,
-          browser,
-          os,
-          source,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term
-        FROM joins
-        ORDER BY joined_at DESC
-        LIMIT 50
-      `
-      )
-      .all();
-
-    // Simple HTML UI
-    res.send(`
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8" />
-        <title>Telegram Funnel Stats</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <style>
-          body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: #0f172a;
-            color: #e5e7eb;
-            padding: 24px;
-          }
-          .container {
-            max-width: 1100px;
-            margin: 0 auto;
-          }
-          h1 {
-            font-size: 24px;
-            margin-bottom: 16px;
-          }
-          .cards {
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-            margin-bottom: 24px;
-          }
-          .card {
-            background: #111827;
-            border-radius: 12px;
-            padding: 16px 18px;
-            flex: 1 1 180px;
-            min-width: 180px;
-          }
-          .card h2 {
-            font-size: 14px;
-            color: #9ca3af;
-            margin-bottom: 8px;
-          }
-          .card .value {
-            font-size: 22px;
-            font-weight: 600;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 24px;
-          }
-          th, td {
-            padding: 8px 10px;
-            border-bottom: 1px solid #1f2937;
-            font-size: 12px;
-          }
-          th {
-            text-align: left;
-            color: #9ca3af;
-            white-space: nowrap;
-          }
-          td {
-            white-space: nowrap;
-          }
-          tr:hover {
-            background: #111827;
-          }
-          .section-title {
-            font-size: 16px;
-            margin: 16px 0 8px;
-          }
-          .muted {
-            color: #6b7280;
-            font-size: 12px;
-          }
-          .nowrap {
-            white-space: nowrap;
-          }
-          @media (max-width: 900px) {
-            table {
-              display: block;
-              overflow-x: auto;
-            }
-          }
-          @media (max-width: 600px) {
-            .cards {
-              flex-direction: column;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>Telegram Funnel Stats 📊</h1>
-
-          <div class="cards">
-            <div class="card">
-              <h2>Total Joins</h2>
-              <div class="value">${totalJoins}</div>
-            </div>
-            <div class="card">
-              <h2>Today Joins</h2>
-              <div class="value">${todayJoins}</div>
-            </div>
-          </div>
-
-
-          <div>
-            <div class="section-title">Last 7 Days</div>
-
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Joins</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  last7Days.length === 0
-                    ? `<tr><td colspan="2" class="muted">No data yet</td></tr>`
-                    : last7Days
-                        .map(
-                          (d) => `
-                  <tr>
-                    <td>${d.date}</td>
-                    <td>${d.count}</td>
-                  </tr>`
-                        )
-                        .join('')
-                }
-              </tbody>
-            </table>
-          </div>
-
-          <div>
-            <div class="section-title">By Channel</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Channel Title</th>
-                  <th>Channel ID</th>
-                  <th>Total Joins</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  channels.length === 0
-                    ? `<tr><td colspan="3" class="muted">No data yet</td></tr>`
-                    : channels
-                        .map(
-                          (c) => `
-                  <tr>
-                    <td>${c.channel_title || '(no title)'}</td>
-                    <td>${c.channel_id}</td>
-                    <td>${c.total}</td>
-                  </tr>`
-                        )
-                        .join('')
-                }
-              </tbody>
-            </table>
-          </div>
-
-          <div>
-            <div class="section-title">Recent Joins (Tracking Details)</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Username</th>
-                  <th>Channel</th>
-                  <th>IP</th>
-                  <th>Country</th>
-                  <th>Device</th>
-                  <th>Browser</th>
-                  <th>OS</th>
-                  <th>Source</th>
-                  <th>UTM Source</th>
-                  <th>UTM Medium</th>
-                  <th>UTM Campaign</th>
-                  <th>UTM Content</th>
-                  <th>UTM Term</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  recentJoins.length === 0
-                    ? `<tr><td colspan="14" class="muted">No joins yet</td></tr>`
-                    : recentJoins
-                        .map((j) => {
-                          const dt = new Date(j.joined_at * 1000).toISOString().replace('T',' ').substring(0,19);
-                          return `
-                  <tr>
-                    <td class="nowrap">${dt}</td>
-                    <td>${j.telegram_username || '(no username)'}</td>
-                    <td>${j.channel_title || ''}</td>
-                    <td>${j.ip || ''}</td>
-                    <td>${j.country || ''}</td>
-                    <td>${j.device_type || ''}</td>
-                    <td>${j.browser || ''}</td>
-                    <td>${j.os || ''}</td>
-                    <td>${j.source || ''}</td>
-                    <td>${j.utm_source || ''}</td>
-                    <td>${j.utm_medium || ''}</td>
-                    <td>${j.utm_campaign || ''}</td>
-                    <td>${j.utm_content || ''}</td>
-                    <td>${j.utm_term || ''}</td>
-                  </tr>`;
-                        })
-                        .join('')
-                }
-              </tbody>
-            </table>
-          </div>
-
-          <div class="muted">
-            Simple v2 dashboard – tracking with IP, device, browser, OS, source & UTM.
-          </div>
-        </div>
-      </body>
-      </html>
-    `);
-  } catch (err) {
-    console.error('❌ Error in /dashboard:', err);
-    res.status(500).send('Internal error');
-  }
-});
-
-
-// ---------- LOGIN + LOGOUT + PANEL (SaaS UI) ----------
-
-// GET /login
-app.get('/login', (req, res) => {
-  const token = req.cookies && req.cookies.auth;
-  const userId = verifyAuthToken(token);
-  if (userId) {
-    return res.redirect('/panel');
-  }
-
-  const error = req.query.error ? 'Invalid email or password' : '';
-
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8" />
-      <title>UTS Login</title>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <style>
-        body {
-          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          background: #020617;
-          color: #e5e7eb;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          min-height: 100vh;
-          margin: 0;
-        }
-        .card {
-          background: #020617;
-          border-radius: 16px;
-          padding: 24px 22px;
-          width: 100%;
-          max-width: 360px;
-          border: 1px solid #1f2937;
-          box-shadow: 0 18px 40px rgba(0,0,0,0.6);
-        }
-        h1 {
-          font-size: 20px;
-          margin-bottom: 4px;
-        }
-        .sub {
-          font-size: 12px;
-          color: #9ca3af;
-          margin-bottom: 18px;
-        }
-        label {
-          font-size: 13px;
-          display: block;
-          margin-bottom: 4px;
-        }
-        input[type="email"],
-        input[type="password"] {
-          width: 100%;
-          padding: 8px 10px;
-          border-radius: 8px;
-          border: 1px solid #374151;
-          background: #020617;
-          color: #e5e7eb;
-          font-size: 13px;
-          margin-bottom: 10px;
-        }
-        button {
-          width: 100%;
-          margin-top: 6px;
-          padding: 10px 12px;
-          border-radius: 999px;
-          border: none;
-          background: linear-gradient(135deg, #22c55e, #16a34a);
-          color: #022c22;
-          font-weight: 600;
-          cursor: pointer;
-          font-size: 14px;
-        }
-        .error {
-          color: #f97373;
-          font-size: 12px;
-          margin-bottom: 8px;
-        }
-        .hint {
-          margin-top: 12px;
-          font-size: 11px;
-          color: #9ca3af;
-        }
-        .hint code {
-          background: #111827;
-          padding: 2px 4px;
-          border-radius: 4px;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <h1>Universal Tracking Login</h1>
-        <div class="sub">Admin / Agency workspace access</div>
-
-        ${error ? `<div class="error">${error}</div>` : ''}
-
-        <form method="POST" action="/login">
-          <label for="email">Email</label>
-          <input id="email" name="email" type="email" required />
-
-          <label for="password">Password</label>
-          <input id="password" name="password" type="password" required />
-
-          <button type="submit">Log in</button>
-        </form>
-
-        <div class="hint">
-          First-time dev login (after <code>/dev/seed-admin</code>):<br/>
-          Email: <code>admin@uts.local</code><br/>
-          Pass: <code>Admin@123</code>
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// POST /login
-app.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res.redirect('/login?error=1');
-    }
-
-    const user = db
-      .prepare('SELECT * FROM users WHERE email = ?')
-      .get(String(email).toLowerCase());
-
-    if (!user) {
-      return res.redirect('/login?error=1');
-    }
-
-    const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) {
-      return res.redirect('/login?error=1');
-    }
-
-    const token = signAuthToken(user.id);
-    res.cookie('auth', token, {
-      httpOnly: true,
-      sameSite: 'lax'
-      // secure: true // HTTPS only
-    });
-
-    // Role-based redirect:
-    // - admin/owner: go to /panel (multi-client view)
-    // - client: go directly to its own workspace
-    if (user.role === 'admin' || user.role === 'owner') {
-      return res.redirect('/panel');
-    }
-
-    if (user.role === 'client') {
-      const clientRow = db
-        .prepare('SELECT id FROM clients WHERE login_user_id = ?')
-        .get(user.id);
-
-      if (clientRow && clientRow.id) {
-        return res.redirect('/panel/client/' + clientRow.id);
-      }
-
-      // Fallback if mapping missing
-      return res.redirect('/panel');
-    }
-
-    // Default fallback
-    return res.redirect('/panel');
-  } catch (err) {
-    console.error('❌ Error in POST /login:', err);
-    return res.redirect('/login?error=1');
-  }
-});
-
-// GET /logout
-app.get('/logout', (req, res) => {
-  res.clearCookie('auth');
-  res.redirect('/login');
-});
-
-// GET /panel - multi-client panel + "Add client" UI
-app.get('/panel', requireAuth, (req, res) => {
-  try {
-    const user = req.user;
-    // If this is a direct client login, redirect them to their own workspace
-    if (user.role === 'client') {
-      const clientRow = db
-        .prepare('SELECT id FROM clients WHERE login_user_id = ?')
-        .get(user.id);
-
-      if (clientRow && clientRow.id) {
-        return res.redirect('/panel/client/' + clientRow.id);
-      }
-
-      return res.status(403).send('Client not assigned to any workspace');
-    }
-
-
-    const errorCode = req.query.error || '';
-    let errorHtml = '';
-    if (errorCode === 'noname') {
-      errorHtml = '<div class="error">Client name is required.</div>';
-    } else if (errorCode === 'generic') {
-      errorHtml = '<div class="error">Could not create client. Please try again.</div>';
-    }
-
-    const clients = db
-      .prepare(`
-        SELECT
-          id,
-          name,
-          slug,
-          public_key,
-          secret_key,
-          plan,
-          max_channels,
-          is_active,
-          created_at
-        FROM clients
-        WHERE owner_user_id = ?
-        ORDER BY id ASC
-      `)
-      .all(user.id);
-
-    const clientStats = clients.map((c) => {
-      const row = db
-        .prepare(`
-          SELECT COUNT(*) AS cnt
-          FROM joins j
-          JOIN channels ch ON ch.telegram_chat_id = j.channel_id
-          WHERE ch.client_id = ?
-        `)
-        .get(c.id);
-      return {
-        client_id: c.id,
-        total_joins: row.cnt || 0
-      };
-    });
-
-    const statsByClientId = {};
-    clientStats.forEach((s) => {
-      statsByClientId[s.client_id] = s.total_joins;
-    });
-
-    const rowsHtml =
-      clients.length > 0
-        ? clients
-            .map((c) => {
-              const totalJoins = statsByClientId[c.id] || 0;
-              const status = c.is_active ? 'Active' : 'Inactive';
-              const created = c.created_at
-                ? new Date(c.created_at * 1000).toISOString().substring(0, 10)
-                : '';
-
-              return `
-          <tr>
-            <td>${c.name || '(no name)'}</td>
-            <td>${c.slug || ''}</td>
-            <td><code>${c.public_key || ''}</code></td>
-            <td><code>${c.secret_key || ''}</code></td>
-            <td>${c.plan || ''}</td>
-            <td>${c.max_channels || ''}</td>
-            <td>${status}</td>
-            <td>${totalJoins}</td>
-            <td>${created}</td>
-            <td>
-              <a href="/panel/client/${c.id}" style="color:#38bdf8;font-size:12px;text-decoration:none;">
-                View
-              </a>
-            </td>
-          </tr>
-        `;
-            })
-            .join('')
-        : `
-        <tr><td colspan="9" class="muted">No clients yet for this user.</td></tr>
-      `;
-
-    res.send(`
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8" />
-        <title>UTS Workspace Panel</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <style>
-          body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: #020617;
-            color: #e5e7eb;
-            padding: 20px;
-            margin: 0;
-          }
-          .topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 18px;
-          }
-          .topbar h1 {
-            font-size: 20px;
-            margin: 0;
-          }
-          .topbar .user {
-            font-size: 13px;
-            color: #9ca3af;
-          }
-          .topbar a {
-            color: #f97316;
-            font-size: 12px;
-            text-decoration: none;
-            margin-left: 12px;
-          }
-          .card {
-            background: #020617;
-            border-radius: 14px;
-            padding: 16px 18px;
-            border: 1px solid #1f2937;
-            box-shadow: 0 18px 40px rgba(0,0,0,0.6);
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-          }
-          th, td {
-            padding: 8px 10px;
-            border-bottom: 1px solid #1f2937;
-            font-size: 12px;
-            white-space: nowrap;
-          }
-          th {
-            text-align: left;
-            color: #9ca3af;
-          }
-          code {
-            background: #111827;
-            padding: 2px 4px;
-            border-radius: 4px;
-            font-size: 11px;
-          }
-          .muted {
-            color: #6b7280;
-            font-size: 12px;
-          }
-          .error {
-            margin-top: 8px;
-            margin-bottom: 4px;
-            font-size: 12px;
-            color: #f97373;
-          }
-          .new-client {
-            margin-top: 12px;
-            margin-bottom: 10px;
-          }
-          .new-client-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: flex-end;
-          }
-          .field {
-            display: flex;
-            flex-direction: column;
-            font-size: 12px;
-          }
-          .field label {
-            margin-bottom: 4px;
-            color: #9ca3af;
-          }
-          .field input,
-          .field select {
-            padding: 6px 8px;
-            border-radius: 8px;
-            border: 1px solid #1f2937;
-            background: #020617;
-            color: #e5e7eb;
-            font-size: 12px;
-            min-width: 120px;
-          }
-          .field.small input {
-            max-width: 90px;
-          }
-          .new-client button {
-            padding: 8px 14px;
-            border-radius: 999px;
-            border: none;
-            background: linear-gradient(135deg, #22c55e, #16a34a);
-            color: #022c22;
-            font-weight: 600;
-            cursor: pointer;
-            font-size: 12px;
-          }
-          @media (max-width: 900px) {
-            table {
-              display: block;
-              overflow-x: auto;
-            }
-            .new-client-row {
-              flex-direction: column;
-              align-items: stretch;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="topbar">
-          <div>
-            <h1>Universal Tracking Workspace</h1>
-            <div class="user">
-              Logged in as: <strong>${user.email}</strong>
-            </div>
-          </div>
-          <div>
-            <a href="/dashboard" target="_blank">Global dashboard</a>
-            <a href="/logout">Logout</a>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2 style="font-size: 15px; margin: 0 0 6px 0;">Your clients</h2>
-          <div class="muted">Use these keys in landing pages / bots for each client.</div>
-          ${errorHtml}
-
-          <form method="POST" action="/panel/new-client" class="new-client">
-            <div class="new-client-row">
-              <div class="field">
-                <label for="name">Client name</label>
-                <input id="name" name="name" type="text" required placeholder="e.g. VeerBhai Agency" />
-              </div>
-              <div class="field">
-                <label for="slug">Slug (optional)</label>
-                <input id="slug" name="slug" type="text" placeholder="veerbhai-agency" />
-              </div>
-              <div class="field">
-                <label for="plan">Plan</label>
-                <select id="plan" name="plan">
-                  <option value="starter" selected>starter</option>
-                  <option value="pro">pro</option>
-                  <option value="agency">agency</option>
-                </select>
-              </div>
-              <div class="field small">
-                <label for="max_channels">Max channels</label>
-                <input id="max_channels" name="max_channels" type="number" min="1" value="3" />
-              </div>
-              <div class="field">
-                <label>&nbsp;</label>
-                <button type="submit">+ Add client</button>
-              </div>
-            </div>
-          </form>
-
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Slug</th>
-                <th>Public key</th>
-                <th>Secret key</th>
-                <th>Plan</th>
-                <th>Max channels</th>
-                <th>Status</th>
-                <th>Total joins</th>
-                <th>Created</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rowsHtml}
-            </tbody>
-          </table>
-        </div>
-      </body>
-      </html>
-    `);
-  } catch (err) {
-    console.error('❌ Error in GET /panel:', err);
-    res.status(500).send('Internal error');
-  }
-});
-
-// POST /panel/new-client - create a new client for logged-in user
-app.post('/panel/new-client', requireAuth, (req, res) => {
-  try {
-    const user = req.user;
-    let { name, slug, plan, max_channels } = req.body || {};
-
-    name = (name || '').trim();
-    slug = (slug || '').trim().toLowerCase();
-    plan = (plan || '').trim().toLowerCase() || 'starter';
-
-    let maxChannels = parseInt(max_channels, 10);
-    if (!maxChannels || maxChannels < 1) {
-      maxChannels = 3;
-    }
-
-    if (!name) {
-      return res.redirect('/panel?error=noname');
-    }
-
-    // Auto-generate slug if empty
-    if (!slug) {
-      slug = name
-        .toLowerCase()
-        .replace(/\s+/g, '-')
-        .replace(/[^a-z0-9-]/g, '')
-        .slice(0, 32);
-      if (!slug) {
-        slug = `client-${Date.now()}`;
-      }
-    }
-
-    // Ensure (owner_user_id, slug) roughly unique
-    const existing = db
-      .prepare('SELECT id FROM clients WHERE owner_user_id = ? AND slug = ?')
-      .get(user.id, slug);
-
-    if (existing) {
-      slug = `${slug}-${Math.random().toString(36).slice(2, 5)}`;
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-
-    const publicKey = generateKey('PUB');
-    const secretKey = generateKey('SEC');
-
-    db.prepare(`
-      INSERT INTO clients (
-        name,
-        slug,
-        owner_user_id,
-        public_key,
-        secret_key,
-        default_pixel_id,
-        default_meta_token,
-        plan,
-        max_channels,
-        is_active,
-        created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      name,
-      slug,
-      user.id,
-      publicKey,
-      secretKey,
-      process.env.META_PIXEL_ID || null,
-      process.env.META_ACCESS_TOKEN || null,
-      plan,
-      maxChannels,
-      1,
-      now
-    );
 
     return res.redirect('/panel');
   } catch (err) {
@@ -2847,143 +1845,79 @@ app.get('/lp/:channelId', async (req, res) => {
 });
 
 
-// ===== Phase 1: JSON Auth + Client Self-Signup + Owner Approval APIs =====
+// ===== API: Auth (Phase 1 – client signup/login) =====
 
-// Helper: plan -> max channels
+// Helper: map plan -> max_channels
 function getMaxChannelsForPlan(plan) {
-  switch ((plan || '').toLowerCase()) {
-    case 'single':
-      return 1;
-    case 'starter':
-      return 3;
-    case 'pro':
-      return 5;
-    case 'agency':
-      return 10;
-    default:
-      return 1;
-  }
+  if (!plan) return 1;
+  const key = String(plan).toLowerCase();
+  if (key === 'single') return 1;
+  if (key === 'starter') return 3;
+  if (key === 'pro') return 5;
+  if (key === 'agency') return 10;
+  return 1;
 }
 
-// Helper: basic email normalize
-function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase();
-}
-
-// API: Client self-signup with plan
+// Client signup – creates user + client row (pending approval)
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    let { name, email, password, plan } = req.body || {};
-    name = (name || '').trim();
-    email = normalizeEmail(email);
-    plan = (plan || '').trim().toLowerCase();
+    const { name, email, password, plan } = req.body || {};
 
-    if (!name || !email || !password || !plan) {
-      return res.status(400).json({ success: false, error: 'Missing required fields' });
+    if (!name || !email || !password) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Name, email, password required' });
     }
 
-    const allowedPlans = ['single', 'starter', 'pro', 'agency'];
-    if (!allowedPlans.includes(plan)) {
-      return res.status(400).json({ success: false, error: 'Invalid plan selected' });
-    }
+    const normalizedEmail = String(email).trim().toLowerCase();
 
-    // Email already used?
-    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existingUser = db
+      .prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
+      .get(normalizedEmail);
     if (existingUser) {
-      return res.status(400).json({ success: false, error: 'Email already registered' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'Email already registered' });
     }
 
+    const hash = await bcrypt.hash(password, 10);
+    const max_channels = getMaxChannelsForPlan(plan);
     const now = Math.floor(Date.now() / 1000);
-    const password_hash = await bcrypt.hash(password, 10);
 
-    // Insert user as "client"
-    const insertUser = db.prepare(`
-      INSERT INTO users (email, password_hash, role, is_active, created_at)
-      VALUES (?, ?, 'client', 1, ?)
-    `);
-    const userResult = insertUser.run(email, password_hash, now);
-    const userId = userResult.lastInsertRowid;
+    const insertUser = db.prepare(
+      'INSERT INTO users (email, password_hash, role, is_active, created_at) VALUES (?, ?, ?, ?, ?)'
+    );
+    const infoUser = insertUser.run(
+      normalizedEmail,
+      hash,
+      'client',
+      1,
+      now
+    );
 
-    // Generate slug from name
-    let slug = name
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9-]/g, '')
-      .slice(0, 32);
-    if (!slug) {
-      slug = 'client-' + Date.now();
-    }
-
-    // Try to attach an owner/admin if available (first admin/owner)
-    let ownerUserId = null;
-    const ownerRow = db
-      .prepare('SELECT id FROM users WHERE role IN (?, ?) ORDER BY id LIMIT 1')
-      .get('admin', 'owner');
-    if (ownerRow && ownerRow.id) {
-      ownerUserId = ownerRow.id;
-    }
-
-    // Ensure slug roughly unique (by owner)
-    if (ownerUserId) {
-      const existingSlug = db
-        .prepare('SELECT id FROM clients WHERE owner_user_id = ? AND slug = ?')
-        .get(ownerUserId, slug);
-      if (existingSlug) {
-        slug = slug + '-' + Math.random().toString(36).slice(2, 5);
-      }
-    }
-
-    const publicKey = generateKey('PUB');
-    const secretKey = generateKey('SEC');
-    const maxChannels = getMaxChannelsForPlan(plan);
-
-    const insertClient = db.prepare(`
-      INSERT INTO clients (
+    const insertClient = db.prepare(
+      `INSERT INTO clients (
         name,
-        slug,
-        owner_user_id,
-        public_key,
-        secret_key,
-        default_pixel_id,
-        default_meta_token,
         plan,
         max_channels,
         is_active,
         created_at,
         login_user_id
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const clientResult = insertClient.run(
+      ) VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    insertClient.run(
       name,
-      slug,
-      ownerUserId,
-      publicKey,
-      secretKey,
-      process.env.META_PIXEL_ID || null,
-      process.env.META_ACCESS_TOKEN || null,
-      plan,
-      maxChannels,
-      0, // pending until owner approves
+      plan || 'starter',
+      max_channels,
+      0,
       now,
-      userId
+      infoUser.lastInsertRowid
     );
 
     return res.json({
       success: true,
-      message: 'Account created. Please wait for owner approval.',
-      client: {
-        id: clientResult.lastInsertRowid,
-        name,
-        email,
-        plan,
-        max_channels: maxChannels,
-        is_active: 0,
-        slug,
-        public_key: publicKey,
-        secret_key: secretKey
-      }
+      message:
+        'Account created. Owner will review and approve your workspace.',
     });
   } catch (err) {
     console.error('❌ Error in /api/auth/signup:', err);
@@ -2991,79 +1925,78 @@ app.post('/api/auth/signup', async (req, res) => {
   }
 });
 
-// API: Client login (JSON) - sets same cookie as HTML /login
+// Client / owner login
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body || {};
-    const normEmail = normalizeEmail(email);
-
-    if (!normEmail || !password) {
-      return res.status(400).json({ success: false, error: 'Missing email or password' });
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Email and password required' });
     }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
 
     const user = db
       .prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
-      .get(normEmail);
-
+      .get(normalizedEmail);
     if (!user) {
-      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+      return res
+        .status(401)
+        .json({ success: false, error: 'Invalid credentials' });
     }
 
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) {
-      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+      return res
+        .status(401)
+        .json({ success: false, error: 'Invalid credentials' });
     }
 
-    // Client login only for this endpoint
-    if (user.role !== 'client') {
-      return res.status(403).json({ success: false, error: 'Not a client account' });
+    // For client accounts, check their client workspace status
+    if (user.role === 'client') {
+      const client = db
+        .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+        .get(user.id);
+
+      if (!client) {
+        return res.status(403).json({
+          success: false,
+          status: 'no_client',
+          message: 'No client workspace is attached to this user yet.',
+        });
+      }
+
+      if (client.is_active === 0) {
+        return res.status(403).json({
+          success: false,
+          status: 'pending',
+          message: 'Your account is pending approval by the owner.',
+        });
+      }
+
+      if (client.is_active === -1) {
+        return res.status(403).json({
+          success: false,
+          status: 'rejected',
+          message: 'Your account was rejected. Contact support.',
+        });
+      }
     }
 
-    const clientRow = db
-      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
-      .get(user.id);
-
-    if (!clientRow) {
-      return res.status(403).json({ success: false, error: 'Client workspace not found for this user' });
-    }
-
-    if (clientRow.is_active === 0) {
-      return res.json({
-        success: false,
-        status: 'pending',
-        message: 'Your account is pending approval by the owner.'
-      });
-    }
-
-    if (clientRow.is_active === -1) {
-      return res.json({
-        success: false,
-        status: 'rejected',
-        message: 'Your account was rejected. Contact support.'
-      });
-    }
-
-    // Same token format & cookie as existing /login flow
     const token = signAuthToken(user.id);
     res.cookie('auth', token, {
       httpOnly: true,
-      sameSite: 'lax'
-      // secure: true // enable if behind HTTPS
+      sameSite: 'lax',
     });
 
     return res.json({
       success: true,
       user: {
-        type: 'client',
-        user_id: user.id,
-        client_id: clientRow.id,
+        id: user.id,
         email: user.email,
-        plan: clientRow.plan,
-        max_channels: clientRow.max_channels,
-        is_active: clientRow.is_active,
-        name: clientRow.name,
-        slug: clientRow.slug
-      }
+        role: user.role,
+      },
     });
   } catch (err) {
     console.error('❌ Error in /api/auth/login:', err);
@@ -3071,193 +2004,509 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// API: Who am I? (client/admin/owner) using cookie auth
-app.get('/api/auth/me', requireAuth, (req, res) => {
+// Check current session
+app.get('/api/auth/me', (req, res) => {
   try {
-    const user = req.user;
-
-    if (user.role === 'client') {
-      const clientRow = db
-        .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
-        .get(user.id);
-
-      if (!clientRow) {
-        return res.status(404).json({ success: false, error: 'Client workspace not found' });
-      }
-
-      return res.json({
-        success: true,
-        user: {
-          type: 'client',
-          user_id: user.id,
-          client_id: clientRow.id,
-          email: user.email,
-          plan: clientRow.plan,
-          max_channels: clientRow.max_channels,
-          is_active: clientRow.is_active,
-          name: clientRow.name,
-          slug: clientRow.slug
-        }
-      });
+    const token = req.cookies && req.cookies.auth;
+    const userId = verifyAuthToken(token);
+    if (!userId) {
+      return res.json({ success: false, user: null });
     }
 
-    // Admin / owner
-    if (user.role === 'admin' || user.role === 'owner') {
-      return res.json({
-        success: true,
-        user: {
-          type: 'owner',
-          user_id: user.id,
-          email: user.email,
-          role: user.role
-        }
-      });
+    const user = db
+      .prepare('SELECT * FROM users WHERE id = ? LIMIT 1')
+      .get(userId);
+    if (!user) {
+      res.clearCookie('auth');
+      return res.json({ success: false, user: null });
     }
 
-    return res.status(403).json({ success: false, error: 'Unsupported role' });
+    return res.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+      },
+    });
   } catch (err) {
     console.error('❌ Error in /api/auth/me:', err);
     return res.status(500).json({ success: false, error: 'Internal error' });
   }
 });
 
-// API: Owner/admin login (JSON) - optional helper for React owner panel
+// ===== API: Owner – approve/reject clients (simple JSON layer) =====
+
+// Owner login (email/password) – must be role=admin
 app.post('/api/owner/login', async (req, res) => {
   try {
     const { email, password } = req.body || {};
-    const normEmail = normalizeEmail(email);
-    if (!normEmail || !password) {
-      return res.status(400).json({ success: false, error: 'Missing email or password' });
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Email and password required' });
     }
 
+    const normalizedEmail = String(email).trim().toLowerCase();
     const user = db
-      .prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
-      .get(normEmail);
+      .prepare(
+        'SELECT * FROM users WHERE email = ? AND role = ? LIMIT 1'
+      )
+      .get(normalizedEmail, 'admin');
 
     if (!user) {
-      return res.status(401).json({ success: false, error: 'Invalid email or password' });
-    }
-
-    if (user.role !== 'admin' && user.role !== 'owner') {
-      return res.status(403).json({ success: false, error: 'Not an owner/admin account' });
+      return res
+        .status(401)
+        .json({ success: false, error: 'Invalid owner credentials' });
     }
 
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) {
-      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+      return res
+        .status(401)
+        .json({ success: false, error: 'Invalid owner credentials' });
     }
 
     const token = signAuthToken(user.id);
     res.cookie('auth', token, {
       httpOnly: true,
-      sameSite: 'lax'
-      // secure: true // HTTPS only
+      sameSite: 'lax',
     });
 
-    return res.json({
-      success: true,
-      user: {
-        type: 'owner',
-        user_id: user.id,
-        email: user.email,
-        role: user.role
-      }
-    });
+    return res.json({ success: true, role: 'admin' });
   } catch (err) {
     console.error('❌ Error in /api/owner/login:', err);
     return res.status(500).json({ success: false, error: 'Internal error' });
   }
 });
 
-// API: Owner/admin – list pending clients
-app.get('/api/owner/clients/pending', requireAuth, (req, res) => {
+// Owner: list pending clients
+app.get('/api/owner/clients/pending', requireAuthApi, (req, res) => {
   try {
     const user = req.user;
-    if (user.role !== 'admin' && user.role !== 'owner') {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
+    if (user.role !== 'admin') {
+      return res
+        .status(403)
+        .json({ success: false, error: 'Not an owner/admin' });
     }
 
     const rows = db
-      .prepare(`
-        SELECT
-          id,
-          name,
-          slug,
-          plan,
-          max_channels,
-          is_active,
-          created_at
-        FROM clients
-        WHERE is_active = 0
-        ORDER BY created_at DESC
-      `)
+      .prepare('SELECT * FROM clients WHERE is_active = 0 ORDER BY created_at DESC')
       .all();
 
-    return res.json({
-      success: true,
-      clients: rows
-    });
+    return res.json({ success: true, clients: rows });
   } catch (err) {
-    console.error('❌ Error in GET /api/owner/clients/pending:', err);
+    console.error('❌ Error in /api/owner/clients/pending:', err);
     return res.status(500).json({ success: false, error: 'Internal error' });
   }
 });
 
-// API: Owner/admin – approve client
-app.post('/api/owner/clients/:id/approve', requireAuth, (req, res) => {
+// Owner: approve / reject client
+app.post('/api/owner/clients/:id/status', requireAuthApi, (req, res) => {
   try {
     const user = req.user;
-    if (user.role !== 'admin' && user.role !== 'owner') {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
+    if (user.role !== 'admin') {
+      return res
+        .status(403)
+        .json({ success: false, error: 'Not an owner/admin' });
     }
 
     const clientId = parseInt(req.params.id, 10);
+    const { status } = req.body || {}; // "approved", "rejected"
+
     if (!clientId || Number.isNaN(clientId)) {
-      return res.status(400).json({ success: false, error: 'Invalid client id' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'Invalid client id' });
     }
 
-    const update = db.prepare(`
-      UPDATE clients
-      SET is_active = 1
-      WHERE id = ?
-    `);
-    update.run(clientId);
-
-    const client = db
-      .prepare('SELECT id, name, plan, max_channels, is_active FROM clients WHERE id = ?')
-      .get(clientId);
-
-    return res.json({ success: true, client });
-  } catch (err) {
-    console.error('❌ Error in POST /api/owner/clients/:id/approve:', err);
-    return res.status(500).json({ success: false, error: 'Internal error' });
-  }
-});
-
-// API: Owner/admin – reject client
-app.post('/api/owner/clients/:id/reject', requireAuth, (req, res) => {
-  try {
-    const user = req.user;
-    if (user.role !== 'admin' && user.role !== 'owner') {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
+    let newStatus = 0;
+    if (status === 'approved') newStatus = 1;
+    else if (status === 'rejected') newStatus = -1;
+    else {
+      return res.status(400).json({
+        success: false,
+        error: 'status must be "approved" or "rejected"',
+      });
     }
 
-    const clientId = parseInt(req.params.id, 10);
-    if (!clientId || Number.isNaN(clientId)) {
-      return res.status(400).json({ success: false, error: 'Invalid client id' });
-    }
-
-    const update = db.prepare(`
-      UPDATE clients
-      SET is_active = -1
-      WHERE id = ?
-    `);
-    update.run(clientId);
+    db.prepare('UPDATE clients SET is_active = ? WHERE id = ?').run(
+      newStatus,
+      clientId
+    );
 
     return res.json({ success: true });
   } catch (err) {
-    console.error('❌ Error in POST /api/owner/clients/:id/reject:', err);
+    console.error('❌ Error in /api/owner/clients/:id/status:', err);
     return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+// ===== Phase 2: Client Dashboard (summary + channels) =====
+
+function formatDateYYYYMMDD(ts) {
+  const d = new Date(ts * 1000);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function getClientForUser(userId) {
+  return db
+    .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+    .get(userId);
+}
+
+// Client summary: plan, usage, basic stats
+app.get('/api/client/dashboard/summary', requireAuthApi, (req, res) => {
+  try {
+    const user = req.user;
+
+    if (user.role !== 'client') {
+      return res
+        .status(403)
+        .json({ success: false, error: 'Not a client account' });
+    }
+
+    const client = getClientForUser(user.id);
+    if (!client) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'Client workspace not found' });
+    }
+
+    if (client.is_active === 0) {
+      return res.json({
+        success: false,
+        status: 'pending',
+        message: 'Your account is pending approval by the owner.',
+      });
+    }
+
+    if (client.is_active === -1) {
+      return res.json({
+        success: false,
+        status: 'rejected',
+        message: 'Your account was rejected. Contact support.',
+      });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
+    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
+
+    const totalRow = db
+      .prepare('SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ?')
+      .get(client.id);
+    const totalJoins = totalRow.cnt || 0;
+
+    const todayRow = db
+      .prepare(
+        'SELECT COUNT(*) AS cnt FROM joins WHERE client_id = ? AND joined_at >= ? AND joined_at <= ?'
+      )
+      .get(client.id, startOfDayTs, now);
+    const todayJoins = todayRow.cnt || 0;
+
+    const rows7 = db
+      .prepare(
+        'SELECT joined_at FROM joins WHERE client_id = ? AND joined_at >= ? ORDER BY joined_at ASC'
+      )
+      .all(client.id, sevenDaysAgoTs);
+
+    const byDateMap = {};
+    for (const r of rows7) {
+      const dateKey = formatDateYYYYMMDD(r.joined_at);
+      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
+    }
+
+    const last7Days = Object.keys(byDateMap)
+      .sort()
+      .map((d) => ({ date: d, count: byDateMap[d] }));
+
+    const usedChannelsRow = db
+      .prepare(
+        'SELECT COUNT(*) AS cnt FROM channels WHERE client_id = ? AND is_active = 1'
+      )
+      .get(client.id);
+    const usedChannels = usedChannelsRow.cnt || 0;
+
+    return res.json({
+      success: true,
+      client: {
+        id: client.id,
+        name: client.name,
+        plan: client.plan,
+        max_channels: client.max_channels,
+        used_channels: usedChannels,
+        remaining_channels: Math.max(
+          0,
+          (client.max_channels || 0) - usedChannels
+        ),
+      },
+      stats: {
+        total_joins: totalJoins,
+        today_joins: todayJoins,
+        last_7_days: last7Days,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Error in /api/client/dashboard/summary:', err);
+    return res
+      .status(500)
+      .json({ success: false, error: 'Internal error' });
+  }
+});
+
+// List channels for this client + per-channel stats
+app.get('/api/client/channels', requireAuthApi, (req, res) => {
+  try {
+    const user = req.user;
+    if (user.role !== 'client') {
+      return res
+        .status(403)
+        .json({ success: false, error: 'Not a client account' });
+    }
+
+    const client = getClientForUser(user.id);
+    if (!client) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'Client workspace not found' });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
+    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
+
+    const channels = db
+      .prepare(
+        \`
+        SELECT
+          id,
+          telegram_chat_id,
+          telegram_title,
+          deep_link,
+          pixel_id,
+          meta_token,
+          lp_url,
+          is_active
+        FROM channels
+        WHERE client_id = ?
+        ORDER BY id DESC
+      \`
+      )
+      .all(client.id);
+
+    const joins = db
+      .prepare(
+        \`
+        SELECT
+          channel_id,
+          COUNT(*) AS total,
+          SUM(CASE WHEN joined_at >= ? AND joined_at <= ? THEN 1 ELSE 0 END) AS today,
+          SUM(CASE WHEN joined_at >= ? THEN 1 ELSE 0 END) AS last7
+        FROM joins
+        WHERE client_id = ?
+        GROUP BY channel_id
+      \`
+      )
+      .all(startOfDayTs, now, sevenDaysAgoTs, client.id);
+
+    const statsByChannelId = {};
+    for (const row of joins) {
+      statsByChannelId[row.channel_id] = {
+        total: row.total || 0,
+        today: row.today || 0,
+        last7: row.last7 || 0,
+      };
+    }
+
+    const result = channels.map((ch) => {
+      const key = ch.telegram_chat_id;
+      const s = statsByChannelId[key] || {
+        total: 0,
+        today: 0,
+        last7: 0,
+      };
+      return {
+        ...ch,
+        stats: s,
+      };
+    });
+
+    return res.json({ success: true, channels: result });
+  } catch (err) {
+    console.error('❌ Error in /api/client/channels (GET):', err);
+    return res
+      .status(500)
+      .json({ success: false, error: 'Internal error' });
+  }
+});
+
+// Create / update channel for a client
+app.post('/api/client/channels', requireAuthApi, (req, res) => {
+  try {
+    const user = req.user;
+    if (user.role !== 'client') {
+      return res
+        .status(403)
+        .json({ success: false, error: 'Not a client account' });
+    }
+
+    const client = getClientForUser(user.id);
+    if (!client) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'Client workspace not found' });
+    }
+
+    const {
+      id,
+      telegram_chat_id,
+      telegram_title,
+      deep_link,
+      pixel_id,
+      meta_token,
+      lp_url,
+      is_active,
+    } = req.body || {};
+
+    if (!telegram_chat_id) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'telegram_chat_id required' });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    if (id) {
+      const existing = db
+        .prepare(
+          'SELECT * FROM channels WHERE id = ? AND client_id = ? LIMIT 1'
+        )
+        .get(id, client.id);
+
+      if (!existing) {
+        return res.status(404).json({
+          success: false,
+          error: 'Channel not found for this client',
+        });
+      }
+
+      const updatedPixel = pixel_id ?? existing.pixel_id;
+      const updatedMetaToken = meta_token ?? existing.meta_token;
+      const updatedLp = lp_url ?? existing.lp_url;
+      const updatedTitle = telegram_title ?? existing.telegram_title;
+      const updatedDeepLink = deep_link ?? existing.deep_link;
+      const updatedIsActive =
+        typeof is_active === 'number'
+          ? is_active
+          : typeof is_active === 'string'
+          ? parseInt(is_active, 10)
+          : existing.is_active;
+
+      db.prepare(
+        \`
+        UPDATE channels
+        SET telegram_title = ?,
+            deep_link = ?,
+            pixel_id = ?,
+            meta_token = ?,
+            lp_url = ?,
+            is_active = ?
+        WHERE id = ? AND client_id = ?
+      \`
+      ).run(
+        updatedTitle,
+        updatedDeepLink,
+        updatedPixel,
+        updatedMetaToken,
+        updatedLp,
+        updatedIsActive,
+        id,
+        client.id
+      );
+
+      const fresh = db
+        .prepare(
+          'SELECT * FROM channels WHERE id = ? AND client_id = ? LIMIT 1'
+        )
+        .get(id, client.id);
+
+      return res.json({ success: true, channel: fresh, mode: 'updated' });
+    }
+
+    const usedChannelsRow = db
+      .prepare(
+        'SELECT COUNT(*) AS cnt FROM channels WHERE client_id = ? AND is_active = 1'
+      )
+      .get(client.id);
+    const usedChannels = usedChannelsRow.cnt || 0;
+
+    if (usedChannels >= (client.max_channels || 0)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Channel limit reached for your plan',
+      });
+    }
+
+    const existingByChat = db
+      .prepare('SELECT * FROM channels WHERE telegram_chat_id = ?')
+      .get(String(telegram_chat_id));
+
+    if (existingByChat && existingByChat.client_id !== client.id) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'This Telegram chat ID is already attached to another client workspace.',
+      });
+    }
+
+    const insert = db.prepare(
+      \`
+      INSERT INTO channels (
+        client_id,
+        telegram_chat_id,
+        telegram_title,
+        deep_link,
+        pixel_id,
+        meta_token,
+        lp_url,
+        created_at,
+        is_active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    \`
+    );
+
+    const info = insert.run(
+      client.id,
+      String(telegram_chat_id),
+      telegram_title || null,
+      deep_link || null,
+      pixel_id || client.default_pixel_id || null,
+      meta_token || client.default_meta_token || null,
+      lp_url || null,
+      now,
+      typeof is_active === 'number' ? is_active : 1
+    );
+
+    const created = db
+      .prepare(
+        'SELECT * FROM channels WHERE id = ? AND client_id = ? LIMIT 1'
+      )
+      .get(info.lastInsertRowid, client.id);
+
+    return res.json({ success: true, channel: created, mode: 'created' });
+  } catch (err) {
+    console.error('❌ Error in /api/client/channels (POST):', err);
+    return res
+      .status(500)
+      .json({ success: false, error: 'Internal error' });
   }
 });
 
