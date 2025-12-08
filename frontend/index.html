@@ -323,10 +323,7 @@
             else if (data.status === 'rejected') setMsg(data.message || 'Account rejected.', 'err');
             else setMsg(data.error || 'Login failed.', 'err');
           } else {
-            setMsg('Logged in ✅ Redirecting to dashboard…', 'ok');
-            setTimeout(() => {
-              window.location.href = '/panel';
-            }, 800);
+            setMsg('Logged in ✅', 'ok');
           }
         } catch (err) {
           console.error(err);
@@ -398,7 +395,10 @@
           });
           const data = await res.json();
           if (!data.success) setMsg(data.error || 'Owner login failed.', 'err');
-          else setMsg('Owner logged in ✅', 'ok');
+          else {
+            setMsg('Owner logged in ✅ Redirecting…', 'ok');
+            setTimeout(() => { window.location.href = '/dashboard'; }, 800);
+          }
         } catch (err) {
           console.error(err);
           setMsg('Network error during owner login.', 'err');
