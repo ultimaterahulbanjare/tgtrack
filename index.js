@@ -897,78 +897,117 @@ app.get('/api/stats', (req, res) => {
 
 // ----- HTML Dashboard: /dashboard -----
 
+
 app.get('/dashboard', requireAuth, (req, res) => {
+  // Owner / super analytics dashboard
   try {
     const user = req.user;
+    if (!user) {
+      return res.redirect('/login');
+    }
     if (user.role === 'client') {
+      // Clients should not see global analytics, send them back to their panel
       return res.redirect('/panel');
     }
 
-    const totalRow = db.prepare('SELECT COUNT(*) AS cnt FROM joins').get();
-    const totalJoins = totalRow.cnt || 0;
+    // Small helpers to avoid hard crashes if DB schema is older
+    function safeGet(sql, params = [], fallback = {}) {
+      try {
+        const stmt = db.prepare(sql);
+        const row = Array.isArray(params) ? stmt.get(...params) : stmt.get(params);
+        return row || fallback;
+      } catch (e) {
+        console.error('DB safeGet error:', sql, e.message);
+        return fallback;
+      }
+    }
+
+    function safeAll(sql, params = [], fallback = []) {
+      try {
+        const stmt = db.prepare(sql);
+        const rows = Array.isArray(params) ? stmt.all(...params) : stmt.all(params);
+        return rows || fallback;
+      } catch (e) {
+        console.error('DB safeAll error:', sql, e.message);
+        return fallback;
+      }
+    }
 
     const now = Math.floor(Date.now() / 1000);
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const startOfDayTs = Math.floor(startOfDay.getTime() / 1000);
+    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
 
-    const todayRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?')
-      .get(startOfDayTs, now);
+    // --- Joins metrics ---
+    const totalRow = safeGet('SELECT COUNT(*) AS cnt FROM joins', [], { cnt: 0 });
+    const totalJoins = totalRow.cnt || 0;
+
+    const todayRow = safeGet(
+      'SELECT COUNT(*) AS cnt FROM joins WHERE joined_at >= ? AND joined_at <= ?',
+      [startOfDayTs, now],
+      { cnt: 0 }
+    );
     const todayJoins = todayRow.cnt || 0;
 
-    const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
-    const rows7 = db
-      .prepare('SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC')
-      .all(sevenDaysAgoTs);
+    const rows7 = safeAll(
+      'SELECT joined_at FROM joins WHERE joined_at >= ? ORDER BY joined_at ASC',
+      [sevenDaysAgoTs],
+      []
+    );
 
     const byDateMap = {};
     for (const r of rows7) {
+      if (!r.joined_at) continue;
       const dateKey = formatDateYYYYMMDD(r.joined_at);
       byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
     }
-
     const last7Days = Object.keys(byDateMap)
       .sort()
       .map((date) => ({ date, count: byDateMap[date] }));
-
     const last7Total = last7Days.reduce((sum, d) => sum + (d.count || 0), 0);
 
-    // Client + channel level aggregates
-    const totalClientsRow = db.prepare('SELECT COUNT(*) AS cnt FROM clients').get();
+    // --- Clients / channels metrics ---
+    const totalClientsRow = safeGet('SELECT COUNT(*) AS cnt FROM clients', [], { cnt: 0 });
     const totalClients = totalClientsRow.cnt || 0;
 
-    const activeClientsRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM clients WHERE is_active = 1')
-      .get();
+    const activeClientsRow = safeGet(
+      'SELECT COUNT(*) AS cnt FROM clients WHERE is_active = 1',
+      [],
+      { cnt: 0 }
+    );
     const activeClients = activeClientsRow.cnt || 0;
 
-    const pendingClientsRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM clients WHERE is_active = 0')
-      .get();
+    const pendingClientsRow = safeGet(
+      'SELECT COUNT(*) AS cnt FROM clients WHERE is_active = 0',
+      [],
+      { cnt: 0 }
+    );
     const pendingClients = pendingClientsRow.cnt || 0;
 
     const inactiveClients = Math.max(totalClients - activeClients, 0);
 
-    const totalChannelsRow = db.prepare('SELECT COUNT(*) AS cnt FROM channels').get();
+    const totalChannelsRow = safeGet('SELECT COUNT(*) AS cnt FROM channels', [], { cnt: 0 });
     const totalChannels = totalChannelsRow.cnt || 0;
 
-    const activeChannelsRow = db
-      .prepare('SELECT COUNT(*) AS cnt FROM channels WHERE is_active = 1')
-      .get();
+    const activeChannelsRow = safeGet(
+      'SELECT COUNT(*) AS cnt FROM channels WHERE is_active = 1',
+      [],
+      { cnt: 0 }
+    );
     const activeChannels = activeChannelsRow.cnt || 0;
 
-    const planRows = db
-      .prepare(
-        `
+    const planRows = safeAll(
+      `
         SELECT
           LOWER(COALESCE(plan, 'unknown')) AS plan,
           COUNT(*) AS cnt
         FROM clients
         GROUP BY LOWER(COALESCE(plan, 'unknown'))
-        `
-      )
-      .all();
+      `,
+      [],
+      []
+    );
 
     const planCounts = { single: 0, starter: 0, pro: 0, agency: 0, other: 0 };
     for (const row of planRows) {
@@ -981,9 +1020,8 @@ app.get('/dashboard', requireAuth, (req, res) => {
       else planCounts.other += cnt;
     }
 
-    const channels = db
-      .prepare(
-        `
+    const channels = safeAll(
+      `
         SELECT 
           channel_id,
           channel_title,
@@ -992,13 +1030,13 @@ app.get('/dashboard', requireAuth, (req, res) => {
         GROUP BY channel_id, channel_title
         ORDER BY total DESC
         LIMIT 20
-        `
-      )
-      .all();
+      `,
+      [],
+      []
+    );
 
-    const topClients7 = db
-      .prepare(
-        `
+    const topClients7 = safeAll(
+      `
         SELECT
           c.id AS client_id,
           c.name AS client_name,
@@ -1014,35 +1052,22 @@ app.get('/dashboard', requireAuth, (req, res) => {
         GROUP BY c.id, c.name, c.slug, c.plan
         ORDER BY joins_7d DESC
         LIMIT 10
-        `
-      )
-      .all(sevenDaysAgoTs, now);
+      `,
+      [sevenDaysAgoTs, now],
+      []
+    );
 
-    const recentJoins = db
-      .prepare(
-        `
+    const recentJoins = safeAll(
+      `
         SELECT
-          telegram_username,
-          channel_title,
-          channel_id,
-          joined_at,
-          ip,
-          country,
-          device_type,
-          browser,
-          os,
-          source,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term
+          *
         FROM joins
         ORDER BY joined_at DESC
         LIMIT 50
-        `
-      )
-      .all();
+      `,
+      [],
+      []
+    );
 
     // Owner super dashboard HTML
     res.send(`
@@ -1356,10 +1381,10 @@ app.get('/dashboard', requireAuth, (req, res) => {
                     ? `<tr><td colspan="15" class="muted">No joins yet</td></tr>`
                     : recentJoins
                         .map((j) => {
-                          const dt = new Date(j.joined_at * 1000)
-                            .toISOString()
-                            .replace('T', ' ')
-                            .substring(0, 19);
+                          const ts = j.joined_at || 0;
+                          const dt = ts
+                            ? new Date(ts * 1000).toISOString().replace('T', ' ').substring(0, 19)
+                            : '';
                           return `
                     <tr>
                       <td>${dt}</td>
