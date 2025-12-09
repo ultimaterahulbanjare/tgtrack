@@ -47,6 +47,21 @@ db.exec(`
   );
 `);
 
+
+// --- LANDING PAGES (LP Generator) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS landing_pages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    channel_id TEXT NOT NULL,
+    slug TEXT UNIQUE,
+    lp_event_mode TEXT,
+    anti_crawler INTEGER DEFAULT 0,
+    created_at INTEGER,
+    updated_at INTEGER
+  );
+`);
+
 // --- JOINS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS joins (
@@ -126,9 +141,7 @@ ensureColumns("clients", [
 
 // Channels me meta_token ensure karo
 ensureColumns("channels", [
-  { name: "meta_token", type: "TEXT" },
-  { name: "lp_event_mode", type: "TEXT" },
-  { name: "lp_anti_crawler", type: "INTEGER" }
+  { name: "meta_token", type: "TEXT" }
 ]);
 
 // pre_leads me created_at ensure karo (agar purana DB hai jisme ts tha)

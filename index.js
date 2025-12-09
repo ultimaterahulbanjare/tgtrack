@@ -95,6 +95,20 @@ function parseUserAgent(uaRaw) {
 }
 
 
+// LP Generator helpers
+function slugifyLpSlug(baseName) {
+  const base = (baseName || '')
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const rand = Math.random().toString(36).substring(2, 7);
+  if (!base) return `lp-${rand}`;
+  return `${base}-${rand}`;
+}
+
+
 // ----- Auth helpers (simple HMAC token in cookie) -----
 const SESSION_SECRET = process.env.SESSION_SECRET || 'change_me_please';
 
@@ -329,66 +343,6 @@ app.post('/api/v1/track/pageview', (req, res) => {
   }
 });
 
-
-// ----- New LP endpoint: lightweight pre-lead tracking (auto LP button click) -----
-app.post('/api/v1/track/pre-lead', (req, res) => {
-  try {
-    const {
-      public_key,
-      channel_id,
-      source,
-      url
-    } = req.body || {};
-
-    if (!public_key) {
-      return res.status(400).json({ ok: false, error: 'public_key required' });
-    }
-    if (!channel_id) {
-      return res.status(400).json({ ok: false, error: 'channel_id required' });
-    }
-
-    // Client lookup (multi-tenant gate)
-    const client = db
-      .prepare('SELECT * FROM clients WHERE public_key = ?')
-      .get(String(public_key));
-
-    if (!client) {
-      return res.status(403).json({ ok: false, error: 'invalid public_key' });
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const ip = getClientIp(req);
-    const country = getCountryFromHeaders(req);
-    const userAgent = req.headers['user-agent'] || null;
-    const { deviceType, browser, os } = parseUserAgent(userAgent);
-
-    // Minimal insert – no fbc/fbp/utms here yet, but compatible with schema
-    insertPreLeadStmt.run(
-      String(channel_id),
-      null, // fbc
-      null, // fbp
-      ip || null,
-      country || null,
-      userAgent || null,
-      deviceType || null,
-      browser || null,
-      os || null,
-      source || 'lp_click',
-      null, // utm_source
-      null, // utm_medium
-      null, // utm_campaign
-      url || null, // store LP URL in utm_content for now
-      null, // utm_term
-      now
-    );
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('❌ Error in /api/v1/track/pre-lead:', err.message || err);
-    return res.status(500).json({ ok: false, error: 'internal_error' });
-  }
-});
-
 // ----- Old LP endpoint: pre-lead capture (fbc/fbp + tracking store) -----
 app.post('/pre-lead', (req, res) => {
   try {
@@ -529,11 +483,9 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
         deep_link,
         pixel_id,
         lp_url,
-        lp_event_mode,
-        lp_anti_crawler,
         created_at,
         is_active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
     `);
 
     const info = stmt.run(
@@ -543,8 +495,6 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       null, // deep_link abhi null
       DEFAULT_META_PIXEL_ID,
       null,
-      'lead',
-      0,
       nowTs
     );
 
@@ -556,8 +506,6 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       deep_link: null,
       pixel_id: DEFAULT_META_PIXEL_ID,
       lp_url: null,
-      lp_event_mode: 'lead',
-      lp_anti_crawler: 0,
       created_at: nowTs,
       is_active: 1,
     };
@@ -650,8 +598,6 @@ async function sendMetaLeadEvent(user, joinRequest) {
   );
 
   const lpUrl = channelConfig.lp_url || null;
-  const lpModeRaw = (channelConfig.lp_event_mode || '').toLowerCase();
-  const serverEventName = lpModeRaw === 'subscribe' ? 'Subscribe' : 'Lead';
 
   // Pixel & Meta access token strictly from channel config.
   // No default pixel or token should be applied if user didn't provide them.
@@ -732,7 +678,7 @@ const externalIdHash = hashSha256(String(user.id));
   }
 
   const eventBody = {
-    event_name: serverEventName,
+    event_name: 'Lead',
     event_time: eventTime,
     event_id: eventId,
     event_source_url: lpUrl,
@@ -2304,8 +2250,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           deep_link,
           pixel_id,
           lp_url,
-          lp_event_mode,
-          lp_anti_crawler,
           is_active,
           created_at
         FROM channels
@@ -2343,6 +2287,25 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       `
       )
       .all(clientId);
+
+    const landingPages = db
+      .prepare(
+        `
+        SELECT
+          lp.id,
+          lp.slug,
+          lp.lp_event_mode,
+          lp.anti_crawler,
+          lp.created_at,
+          ch.telegram_title AS channel_title
+        FROM landing_pages lp
+        JOIN channels ch ON ch.telegram_chat_id = lp.channel_id
+        WHERE lp.client_id = ?
+        ORDER BY lp.created_at DESC, lp.id DESC
+      `
+      )
+      .all(clientId);
+
 
     res.send(`
       <!DOCTYPE html>
@@ -2614,29 +2577,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <input id="lp_url" name="lp_url" type="text" placeholder="https://your-landing-page.com" />
             </div>
             <div class="field">
-              <label>LP click event mapping</label>
-              <div style="font-size:11px;color:#9ca3af;margin-bottom:4px;">
-                Use the <strong>same event type</strong> across all LPs &amp; channels on a single pixel for clean optimization.
-              </div>
-              <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;">
-                <label style="display:flex;align-items:center;gap:6px;">
-                  <input type="radio" name="lp_event_mode" value="lead" checked />
-                  <span>InitiateLead → Lead (recommended)</span>
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;">
-                  <input type="radio" name="lp_event_mode" value="subscribe" />
-                  <span>InitiateSubscribe → Subscribe</span>
-                </label>
-              </div>
-            </div>
-            <div class="field">
-              <label>LP anti-crawler</label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:4px;">
-                <input type="checkbox" name="lp_anti_crawler" value="1" />
-                <span>Enable basic bot / crawler blocking on auto LP</span>
-              </label>
-            </div>
-            <div class="field">
               <label>&nbsp;</label>
               <button type="submit" class="btn">Save channel</button>
             </div>
@@ -2651,7 +2591,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <th>Deep link</th>
               <th>Pixel ID</th>
               <th>LP</th>
-              <th>LP events</th>
               <th>Status</th>
               <th>Total joins</th>
               <th>Today</th>
@@ -2677,10 +2616,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                       const customDisplay = customLp
                         ? `<a href="${customLp}" target="_blank">${customLp}</a>`
                         : 'Not set';
-                      const lpModeRaw = (ch.lp_event_mode || '').toLowerCase();
-                      const lpModeLabel =
-                        lpModeRaw === 'subscribe' ? 'InitiateSubscribe → Subscribe' : 'InitiateLead → Lead';
-                      const antiCrawlerLabel = ch.lp_anti_crawler ? 'On' : 'Off';
                       return `
               <tr>
                 <td>${ch.telegram_title || '(no title)'}</td>
@@ -2698,12 +2633,6 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                     </div>
                   </div>
                 </td>
-                <td>
-                  <div style="font-size:11px;color:#e5e7eb;line-height:1.3;">
-                    <div>${lpModeLabel}</div>
-                    <div>Anti-crawler: <strong>${antiCrawlerLabel}</strong></div>
-                  </div>
-                </td>
                 <td>${status}</td>
                 <td>${tot}</td>
                 <td>${todayCount}</td>
@@ -2715,6 +2644,92 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             }
           </tbody>
         </table>
+
+
+        <h2 class="section-title">LP Generator</h2>
+        <p class="muted">
+          Auto-hosted landing pages per channel. This version uses a single high-conversion template with
+          per-LP event mapping & optional anti-crawler.
+        </p>
+
+        <form method="POST" action="/panel/client/${clientId}/lp/generate">
+          <div class="channels-form-row">
+            <div class="field">
+              <label for="lp_channel_id">Channel</label>
+              <select id="lp_channel_id" name="channel_id" required>
+                <option value="">Select channel</option>
+                ${
+                  channelConfigs.length === 0
+                    ? ''
+                    : channelConfigs
+                        .map(
+                          (ch) =>
+                            `<option value="${ch.telegram_chat_id}">${ch.telegram_title || ch.telegram_chat_id}</option>`
+                        )
+                        .join('')
+                }
+              </select>
+            </div>
+            <div class="field">
+              <label for="lp_event_mode">Click-to-join event</label>
+              <select id="lp_event_mode" name="lp_event_mode">
+                <option value="lead">InitiateLead → Lead</option>
+                <option value="subscribe">InitiateSubscribe → Subscribe</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <label style="font-size:13px;">
+                <input type="checkbox" name="anti_crawler" value="1" />
+                Enable anti-crawler
+              </label>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button type="submit" class="btn">Generate LP</button>
+            </div>
+          </div>
+        </form>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Slug</th>
+              <th>Channel</th>
+              <th>Event</th>
+              <th>Anti-crawler</th>
+              <th>Created</th>
+              <th>URL</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              landingPages.length === 0
+                ? `<tr><td colspan="6" class="muted">No LPs yet</td></tr>`
+                : landingPages
+                    .map((lp) => {
+                      const created = lp.created_at
+                        ? new Date(lp.created_at * 1000).toISOString().substring(0, 10)
+                        : '';
+                      const eventLabel =
+                        lp.lp_event_mode === 'subscribe' ? 'InitiateSubscribe → Subscribe' : 'InitiateLead → Lead';
+                      const antiLabel = lp.anti_crawler ? 'ON' : 'OFF';
+                      const url = `/lp2/${lp.slug}`;
+                      return `
+              <tr>
+                <td>${lp.slug}</td>
+                <td>${lp.channel_title || '-'}</td>
+                <td>${eventLabel}</td>
+                <td>${antiLabel}</td>
+                <td>${created}</td>
+                <td><a href="${url}" target="_blank">${url}</a></td>
+              </tr>`;
+                    })
+                    .join('')
+            }
+          </tbody>
+        </table>
+
 
         <h2 class="section-title">Recent joins</h2>
         <table>
@@ -2803,15 +2818,13 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       return res.status(404).send('Client not found');
     }
 
-    let { telegram_chat_id, telegram_title, deep_link, pixel_id, meta_token, lp_url, lp_event_mode, lp_anti_crawler } = req.body || {};
+    let { telegram_chat_id, telegram_title, deep_link, pixel_id, meta_token, lp_url } = req.body || {};
     telegram_chat_id = (telegram_chat_id || '').trim();
     telegram_title = (telegram_title || '').trim();
     deep_link = (deep_link || '').trim();
     pixel_id = (pixel_id || '').trim();
     meta_token = (meta_token || '').trim();
     lp_url = (lp_url || '').trim();
-    lp_event_mode = (lp_event_mode || '').toLowerCase() === 'subscribe' ? 'subscribe' : 'lead';
-    const lpAntiCrawlerFlag = lp_anti_crawler ? 1 : 0;
 
     if (!telegram_chat_id) {
       return res.status(400).send('telegram_chat_id is required');
@@ -2826,7 +2839,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       db.prepare(
         `
         UPDATE channels
-        SET telegram_title = ?, deep_link = ?, pixel_id = ?, meta_token = ?, lp_url = ?, lp_event_mode = ?, lp_anti_crawler = ?, client_id = ?, is_active = 1
+        SET telegram_title = ?, deep_link = ?, pixel_id = ?, meta_token = ?, lp_url = ?, client_id = ?, is_active = 1
         WHERE id = ?
       `
       ).run(
@@ -2835,8 +2848,6 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         pixel_id || existing.pixel_id,
         meta_token || existing.meta_token,
         lp_url || existing.lp_url,
-        lp_event_mode || existing.lp_event_mode || 'lead',
-        typeof lpAntiCrawlerFlag === 'number' ? lpAntiCrawlerFlag : existing.lp_anti_crawler || 0,
         clientId,
         existing.id
       );
@@ -2871,11 +2882,9 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
           pixel_id,
           meta_token,
           lp_url,
-          lp_event_mode,
-          lp_anti_crawler,
           created_at,
           is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
       `
       ).run(
         clientId,
@@ -2885,8 +2894,6 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         pixel_id || null,
         meta_token || null,
         lp_url || null,
-        lp_event_mode || 'lead',
-        lpAntiCrawlerFlag,
         nowTs
       );
     }
@@ -3007,8 +3014,6 @@ app.get('/lp/:channelId', async (req, res) => {
           ch.telegram_title,
           ch.deep_link,
           ch.pixel_id,
-          ch.lp_event_mode,
-          ch.lp_anti_crawler,
           c.public_key,
           c.name AS client_name
         FROM channels ch
@@ -3028,29 +3033,6 @@ app.get('/lp/:channelId', async (req, res) => {
     const clientName = row.client_name || 'Our Team';
     const publicKey = row.public_key || '';
     const telegramChatId = String(row.telegram_chat_id || '');
-    const lpModeRaw = (row.lp_event_mode || '').toLowerCase();
-    const lpMode = lpModeRaw === 'subscribe' ? 'subscribe' : 'lead';
-    const fbInitiateEvent = lpMode === 'subscribe' ? 'InitiateSubscribe' : 'InitiateLead';
-    const antiCrawlerEnabled = row.lp_anti_crawler ? true : false;
-
-    const antiCrawlerBlock = antiCrawlerEnabled
-      ? `
-    <script>
-      (function() {
-        try {
-          var ua = (navigator.userAgent || '').toLowerCase();
-          var badKeywords = ['bot', 'crawler', 'spider', 'preview', 'facebookexternalhit', 'facebot'];
-          for (var i = 0; i < badKeywords.length; i++) {
-            if (ua.indexOf(badKeywords[i]) !== -1) {
-              document.documentElement.innerHTML = '<head><meta name="robots" content="noindex"><title>Not available</title></head><body></body>';
-              return;
-            }
-          }
-        } catch (e) {}
-      })();
-    </script>
-    `
-      : '';
 
     const pixelBlock = pixelId
       ? `
@@ -3206,7 +3188,6 @@ app.get('/lp/:channelId', async (req, res) => {
         text-align: center;
       }
     </style>
-    ${antiCrawlerBlock}
     ${pixelBlock}
   </head>
   <body>
@@ -3288,8 +3269,8 @@ app.get('/lp/:channelId', async (req, res) => {
         }
 
         try {
-          if (window.fbq && fbInitiateEvent) {
-            fbq('track', fbInitiateEvent);
+          if (window.fbq) {
+            fbq('track', 'Lead');
           }
         } catch (err) {
           console.error('fbq error', err);
@@ -3769,6 +3750,314 @@ app.post('/api/owner/clients/:id/reject', requireAuth, (req, res) => {
   } catch (err) {
     console.error('❌ Error in POST /api/owner/clients/:id/reject:', err);
     return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+
+
+// ----- LP Generator (simple) -----
+// Create LP for a client/channel
+app.post('/panel/client/:id/lp/generate', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    const clientId = parseInt(req.params.id, 10);
+    if (!clientId || Number.isNaN(clientId)) {
+      return res.status(400).send('Invalid client id');
+    }
+
+    let client = null;
+    if (user.role === 'admin' || user.role === 'owner') {
+      client = db
+        .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
+        .get(clientId, user.id);
+    } else if (user.role === 'client') {
+      client = db
+        .prepare('SELECT * FROM clients WHERE id = ? AND login_user_id = ?')
+        .get(clientId, user.id);
+    } else {
+      return res.status(403).send('Forbidden');
+    }
+
+    if (!client) {
+      return res.status(404).send('Client not found');
+    }
+
+    const { channel_id, lp_event_mode, anti_crawler } = req.body || {};
+    if (!channel_id) {
+      return res.status(400).send('Channel is required');
+    }
+
+    const channel = db
+      .prepare('SELECT * FROM channels WHERE client_id = ? AND telegram_chat_id = ?')
+      .get(clientId, channel_id);
+
+    if (!channel) {
+      return res.status(400).send('Channel not found for this client');
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const eventMode = lp_event_mode === 'subscribe' ? 'subscribe' : 'lead';
+    const antiCrawlerFlag = anti_crawler ? 1 : 0;
+
+    const baseName = channel.telegram_title || String(channel.telegram_chat_id || channel_id);
+    const slug = slugifyLpSlug(baseName);
+
+    db.prepare(
+      `
+      INSERT INTO landing_pages (
+        client_id,
+        channel_id,
+        slug,
+        lp_event_mode,
+        anti_crawler,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `
+    ).run(clientId, String(channel.telegram_chat_id || channel_id), slug, eventMode, antiCrawlerFlag, now, now);
+
+    return res.redirect(`/panel/client/${clientId}`);
+  } catch (err) {
+    console.error('❌ Error in POST /panel/client/:id/lp/generate:', err);
+    return res.status(500).send('Internal server error');
+  }
+});
+
+// Render LP by slug
+app.get('/lp2/:slug', (req, res) => {
+  try {
+    const slug = req.params.slug;
+    if (!slug) {
+      return res.status(400).send('Missing slug');
+    }
+
+    const row = db
+      .prepare(
+        `
+        SELECT
+          lp.*,
+          ch.telegram_chat_id,
+          ch.telegram_title,
+          ch.deep_link,
+          ch.pixel_id,
+          ch.meta_token,
+          cl.public_key,
+          cl.default_pixel_id
+        FROM landing_pages lp
+        JOIN channels ch ON ch.telegram_chat_id = lp.channel_id
+        JOIN clients cl ON cl.id = lp.client_id
+        WHERE lp.slug = ?
+      `
+      )
+      .get(slug);
+
+    if (!row) {
+      return res.status(404).send('Landing page not found');
+    }
+
+    const headline =
+      row.telegram_title || 'Get my premium trades on Telegram!';
+    const subheadline =
+      'Live daily signals, real-time market updates and premium analysis directly on Telegram.';
+
+    const fbPixelId = row.pixel_id || row.default_pixel_id || '';
+    const publicKey = row.public_key || '';
+    const channelId = row.telegram_chat_id;
+    const deepLink = row.deep_link || '';
+
+    const eventMode = row.lp_event_mode === 'subscribe' ? 'subscribe' : 'lead';
+    const fbInitiateEvent =
+      eventMode === 'subscribe' ? 'InitiateSubscribe' : 'InitiateLead';
+    const antiCrawlerEnabled = row.anti_crawler ? true : false;
+
+    const antiCrawlerScript = antiCrawlerEnabled
+      ? `
+      <script>
+        (function() {
+          try {
+            var ua = (navigator.userAgent || '').toLowerCase();
+            var bots = ['bot','crawler','spider','preview','facebookexternalhit','facebot'];
+            for (var i = 0; i < bots.length; i++) {
+              if (ua.indexOf(bots[i]) !== -1) {
+                document.documentElement.innerHTML = '<head><meta name="robots" content="noindex"></head><body><div style="padding:40px;font-family:sans-serif;text-align:center;color:#9ca3af;background:#020617;">This page is not available.</div></body>';
+                return;
+              }
+            }
+          } catch (e) {}
+        })();
+      </script>
+    `
+      : '';
+
+    const pixelScript = fbPixelId
+      ? `
+      <script>
+        !function(f,b,e,v,n,t,s)
+        {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+        n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+        if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+        n.queue=[];t=b.createElement(e);t.async=!0;
+        t.src=v;s=b.getElementsByTagName(e)[0];
+        s.parentNode.insertBefore(t,s)}(window, document,'script',
+        'https://connect.facebook.net/en_US/fbevents.js');
+        fbq('init', '${fbPixelId}');
+        fbq('track', 'PageView');
+      </script>
+      <noscript>
+        <img height="1" width="1" style="display:none"
+          src="https://www.facebook.com/tr?id=${fbPixelId}&ev=PageView&noscript=1"
+        />
+      </noscript>
+    `
+      : '';
+
+    const html = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <title>${headline}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="robots" content="noindex, nofollow" />
+        ${antiCrawlerScript}
+        ${pixelScript}
+        <style>
+          body {
+            margin: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: radial-gradient(circle at top, #1d2433 0, #020617 45%, #000 100%);
+            color: #e5e7eb;
+          }
+          .wrap {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+          }
+          .card {
+            width: 100%;
+            max-width: 480px;
+            background: rgba(15, 23, 42, 0.95);
+            border-radius: 16px;
+            padding: 20px 18px 18px;
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.75);
+            border: 1px solid rgba(148, 163, 184, 0.22);
+          }
+          .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: rgba(22, 163, 74, 0.2);
+            color: #bbf7d0;
+            margin-bottom: 10px;
+          }
+          h1 {
+            font-size: 20px;
+            line-height: 1.2;
+            margin: 0 0 6px;
+          }
+          .sub {
+            font-size: 13px;
+            color: #9ca3af;
+            margin-bottom: 12px;
+          }
+          ul {
+            margin: 0 0 14px;
+            padding-left: 18px;
+            font-size: 13px;
+            color: #d1d5db;
+          }
+          .cta {
+            margin-top: 4px;
+          }
+          .cta button {
+            width: 100%;
+            border: none;
+            border-radius: 999px;
+            padding: 10px 14px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            background: linear-gradient(90deg, #22c55e, #16a34a);
+            color: #022c22;
+            box-shadow: 0 10px 25px rgba(22, 163, 74, 0.45);
+          }
+          .cta button:active {
+            transform: translateY(1px);
+            box-shadow: 0 6px 18px rgba(22, 163, 74, 0.5);
+          }
+          .foot {
+            margin-top: 10px;
+            font-size: 11px;
+            color: #6b7280;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="wrap">
+          <div class="card">
+            <div class="badge">
+              <span>● LIVE PREMIUM ACCESS</span>
+            </div>
+            <h1>${headline}</h1>
+            <div class="sub">${subheadline}</div>
+            <ul>
+              <li>📊 Live daily trades & analysis</li>
+              <li>🔥 High accuracy premium signals</li>
+              <li>💡 Real-time market insights & updates</li>
+            </ul>
+            <div class="cta">
+              <button id="joinBtn">Join my premium Telegram channel</button>
+            </div>
+            <div class="foot">
+              By continuing you agree that this is not investment advice. Do your own research and trade responsibly.
+            </div>
+          </div>
+        </div>
+
+        <script>
+          (function() {
+            var btn = document.getElementById('joinBtn');
+            if (!btn) return;
+            btn.addEventListener('click', function() {
+              try {
+                if (window.fbq && '${fbInitiateEvent}') {
+                  fbq('track', '${fbInitiateEvent}');
+                }
+              } catch (e) {}
+
+              try {
+                fetch('/api/v1/track/pageview', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    public_key: '${publicKey}',
+                    channel_id: '${channelId}',
+                    source: 'lp_click',
+                    utm_content: '${slug}'
+                  })
+                }).catch(function(e) {});
+              } catch (e) {}
+
+              if ('${deepLink}') {
+                window.location.href = '${deepLink}';
+              }
+            });
+          })();
+        </script>
+      </body>
+      </html>
+    `;
+
+    return res.send(html);
+  } catch (err) {
+    console.error('❌ Error in GET /lp2/:slug:', err);
+    return res.status(500).send('Internal server error');
   }
 });
 
