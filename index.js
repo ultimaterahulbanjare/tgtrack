@@ -1020,26 +1020,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
       else planCounts.other += cnt;
     }
 
-
-    const pendingList = safeAll(
-      `
-        SELECT
-          id,
-          name,
-          slug,
-          plan,
-          max_channels,
-          is_active,
-          created_at
-        FROM clients
-        WHERE is_active = 0
-        ORDER BY created_at DESC
-        LIMIT 50
-      `,
-      [],
-      []
-    );
-
     const channels = safeAll(
       `
         SELECT 
@@ -1066,7 +1046,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
         FROM clients c
         LEFT JOIN channels ch ON ch.client_id = c.id
         LEFT JOIN joins j
-          ON j.channel_id = ch.channel_id
+          ON j.channel_id = ch.telegram_chat_id
           AND j.joined_at >= ?
           AND j.joined_at <= ?
         GROUP BY c.id, c.name, c.slug, c.plan
@@ -1372,63 +1352,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
             </div>
           </div>
 
-          
           <div class="section">
-            <div class="section-title">Pending client approvals</div>
-            <div class="section-sub">Approve or reject new client workspaces from one place.</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Slug</th>
-                  <th>Plan</th>
-                  <th>Max channels</th>
-                  <th>Created</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  pendingList.length === 0
-                    ? `<tr><td colspan="7" class="muted">No pending clients.</td></tr>`
-                    : pendingList
-                        .map((c) => {
-                          const created = c.created_at
-                            ? new Date(c.created_at * 1000)
-                                .toISOString()
-                                .replace('T', ' ')
-                                .substring(0, 19)
-                            : '';
-                          return `
-                    <tr>
-                      <td>${c.id}</td>
-                      <td>${c.name || ''}</td>
-                      <td><code>${c.slug || ''}</code></td>
-                      <td>${c.plan || ''}</td>
-                      <td>${c.max_channels || ''}</td>
-                      <td>${created}</td>
-                      <td>
-                        <form method="POST" action="/dashboard/clients/${c.id}/approve" style="display:inline;">
-                          <button type="submit" style="font-size:11px;padding:4px 10px;border-radius:999px;border:none;background:#22c55e;color:#020617;cursor:pointer;">
-                            Approve
-                          </button>
-                        </form>
-                        <form method="POST" action="/dashboard/clients/${c.id}/reject" style="display:inline;margin-left:6px;">
-                          <button type="submit" style="font-size:11px;padding:4px 10px;border-radius:999px;border:1px solid #4b5563;background:transparent;color:#fca5a5;cursor:pointer;">
-                            Reject
-                          </button>
-                        </form>
-                      </td>
-                    </tr>`;
-                        })
-                        .join('')
-                }
-              </tbody>
-            </table>
-          </div>
-
-<div class="section">
             <div class="section-title">Recent joins (tracking details)</div>
             <div class="section-sub">Last 50 approved joins with device, geo & UTM information.</div>
             <table>
@@ -3525,54 +3449,6 @@ app.get('/api/owner/clients/pending', requireAuth, (req, res) => {
   } catch (err) {
     console.error('❌ Error in GET /api/owner/clients/pending:', err);
     return res.status(500).json({ success: false, error: 'Internal error' });
-  }
-});
-
-
-// HTML form endpoints for owner dashboard approvals
-app.post('/dashboard/clients/:id/approve', requireAuth, (req, res) => {
-  try {
-    const user = req.user;
-    if (!user || (user.role !== 'admin' && user.role !== 'owner')) {
-      return res.redirect('/login');
-    }
-    const clientId = parseInt(req.params.id, 10);
-    if (!clientId || Number.isNaN(clientId)) {
-      return res.redirect('/dashboard');
-    }
-    const update = db.prepare(`
-      UPDATE clients
-      SET is_active = 1
-      WHERE id = ?
-    `);
-    update.run(clientId);
-    return res.redirect('/dashboard');
-  } catch (err) {
-    console.error('❌ Error in POST /dashboard/clients/:id/approve:', err);
-    return res.redirect('/dashboard');
-  }
-});
-
-app.post('/dashboard/clients/:id/reject', requireAuth, (req, res) => {
-  try {
-    const user = req.user;
-    if (!user || (user.role !== 'admin' && user.role !== 'owner')) {
-      return res.redirect('/login');
-    }
-    const clientId = parseInt(req.params.id, 10);
-    if (!clientId || Number.isNaN(clientId)) {
-      return res.redirect('/dashboard');
-    }
-    const update = db.prepare(`
-      UPDATE clients
-      SET is_active = -1
-      WHERE id = ?
-    `);
-    update.run(clientId);
-    return res.redirect('/dashboard');
-  } catch (err) {
-    console.error('❌ Error in POST /dashboard/clients/:id/reject:', err);
-    return res.redirect('/dashboard');
   }
 });
 
