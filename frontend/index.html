@@ -494,7 +494,7 @@
           <div className="card-header">
             <div>
               <h2>Pending approvals</h2>
-              <div className="muted">Read‑only list. Manage from Owner Super Dashboard.</div>
+              <div className="muted">Approve/reject client workspaces.</div>
             </div>
             <button className="secondary" type="button" onClick={load}>Refresh</button>
           </div>
@@ -505,7 +505,7 @@
             <table>
               <thead>
                 <tr>
-                  <th>ID</th><th>Name</th><th>Slug</th><th>Plan</th><th>Max</th><th>Created</th>
+                  <th>ID</th><th>Name</th><th>Slug</th><th>Plan</th><th>Max</th><th>Created</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -517,6 +517,18 @@
                     <td><span className="tag">{r.plan}</span></td>
                     <td>{r.max_channels}</td>
                     <td>{r.created_at || '-'}</td>
+                    <td>
+                      <button
+                        className="secondary"
+                        style={{marginRight:6,fontSize:11}}
+                        onClick={() => act(r.id,'approve')}
+                      >Approve</button>
+                      <button
+                        className="secondary"
+                        style={{fontSize:11,borderColor:'#4b5563',color:'#fca5a5'}}
+                        onClick={() => act(r.id,'reject')}
+                      >Reject</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
