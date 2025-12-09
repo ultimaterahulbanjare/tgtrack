@@ -329,6 +329,66 @@ app.post('/api/v1/track/pageview', (req, res) => {
   }
 });
 
+
+// ----- New LP endpoint: lightweight pre-lead tracking (auto LP button click) -----
+app.post('/api/v1/track/pre-lead', (req, res) => {
+  try {
+    const {
+      public_key,
+      channel_id,
+      source,
+      url
+    } = req.body || {};
+
+    if (!public_key) {
+      return res.status(400).json({ ok: false, error: 'public_key required' });
+    }
+    if (!channel_id) {
+      return res.status(400).json({ ok: false, error: 'channel_id required' });
+    }
+
+    // Client lookup (multi-tenant gate)
+    const client = db
+      .prepare('SELECT * FROM clients WHERE public_key = ?')
+      .get(String(public_key));
+
+    if (!client) {
+      return res.status(403).json({ ok: false, error: 'invalid public_key' });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const ip = getClientIp(req);
+    const country = getCountryFromHeaders(req);
+    const userAgent = req.headers['user-agent'] || null;
+    const { deviceType, browser, os } = parseUserAgent(userAgent);
+
+    // Minimal insert – no fbc/fbp/utms here yet, but compatible with schema
+    insertPreLeadStmt.run(
+      String(channel_id),
+      null, // fbc
+      null, // fbp
+      ip || null,
+      country || null,
+      userAgent || null,
+      deviceType || null,
+      browser || null,
+      os || null,
+      source || 'lp_click',
+      null, // utm_source
+      null, // utm_medium
+      null, // utm_campaign
+      url || null, // store LP URL in utm_content for now
+      null, // utm_term
+      now
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ Error in /api/v1/track/pre-lead:', err.message || err);
+    return res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
 // ----- Old LP endpoint: pre-lead capture (fbc/fbp + tracking store) -----
 app.post('/pre-lead', (req, res) => {
   try {
@@ -469,9 +529,11 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
         deep_link,
         pixel_id,
         lp_url,
+        lp_event_mode,
+        lp_anti_crawler,
         created_at,
         is_active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     `);
 
     const info = stmt.run(
@@ -481,6 +543,8 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       null, // deep_link abhi null
       DEFAULT_META_PIXEL_ID,
       null,
+      'lead',
+      0,
       nowTs
     );
 
@@ -492,6 +556,8 @@ function getOrCreateChannelConfigFromJoin(joinRequest, nowTs) {
       deep_link: null,
       pixel_id: DEFAULT_META_PIXEL_ID,
       lp_url: null,
+      lp_event_mode: 'lead',
+      lp_anti_crawler: 0,
       created_at: nowTs,
       is_active: 1,
     };
@@ -584,6 +650,8 @@ async function sendMetaLeadEvent(user, joinRequest) {
   );
 
   const lpUrl = channelConfig.lp_url || null;
+  const lpModeRaw = (channelConfig.lp_event_mode || '').toLowerCase();
+  const serverEventName = lpModeRaw === 'subscribe' ? 'Subscribe' : 'Lead';
 
   // Pixel & Meta access token strictly from channel config.
   // No default pixel or token should be applied if user didn't provide them.
@@ -664,7 +732,7 @@ const externalIdHash = hashSha256(String(user.id));
   }
 
   const eventBody = {
-    event_name: 'Lead',
+    event_name: serverEventName,
     event_time: eventTime,
     event_id: eventId,
     event_source_url: lpUrl,
@@ -2236,6 +2304,8 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           deep_link,
           pixel_id,
           lp_url,
+          lp_event_mode,
+          lp_anti_crawler,
           is_active,
           created_at
         FROM channels
@@ -2544,6 +2614,29 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <input id="lp_url" name="lp_url" type="text" placeholder="https://your-landing-page.com" />
             </div>
             <div class="field">
+              <label>LP click event mapping</label>
+              <div style="font-size:11px;color:#9ca3af;margin-bottom:4px;">
+                Use the <strong>same event type</strong> across all LPs &amp; channels on a single pixel for clean optimization.
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;">
+                <label style="display:flex;align-items:center;gap:6px;">
+                  <input type="radio" name="lp_event_mode" value="lead" checked />
+                  <span>InitiateLead → Lead (recommended)</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;">
+                  <input type="radio" name="lp_event_mode" value="subscribe" />
+                  <span>InitiateSubscribe → Subscribe</span>
+                </label>
+              </div>
+            </div>
+            <div class="field">
+              <label>LP anti-crawler</label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:4px;">
+                <input type="checkbox" name="lp_anti_crawler" value="1" />
+                <span>Enable basic bot / crawler blocking on auto LP</span>
+              </label>
+            </div>
+            <div class="field">
               <label>&nbsp;</label>
               <button type="submit" class="btn">Save channel</button>
             </div>
@@ -2558,6 +2651,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <th>Deep link</th>
               <th>Pixel ID</th>
               <th>LP</th>
+              <th>LP events</th>
               <th>Status</th>
               <th>Total joins</th>
               <th>Today</th>
@@ -2583,6 +2677,10 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                       const customDisplay = customLp
                         ? `<a href="${customLp}" target="_blank">${customLp}</a>`
                         : 'Not set';
+                      const lpModeRaw = (ch.lp_event_mode || '').toLowerCase();
+                      const lpModeLabel =
+                        lpModeRaw === 'subscribe' ? 'InitiateSubscribe → Subscribe' : 'InitiateLead → Lead';
+                      const antiCrawlerLabel = ch.lp_anti_crawler ? 'On' : 'Off';
                       return `
               <tr>
                 <td>${ch.telegram_title || '(no title)'}</td>
@@ -2598,6 +2696,12 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                     <div style="font-size:11px;color:#9ca3af;">
                       Custom: ${customDisplay}
                     </div>
+                  </div>
+                </td>
+                <td>
+                  <div style="font-size:11px;color:#e5e7eb;line-height:1.3;">
+                    <div>${lpModeLabel}</div>
+                    <div>Anti-crawler: <strong>${antiCrawlerLabel}</strong></div>
                   </div>
                 </td>
                 <td>${status}</td>
@@ -2699,13 +2803,15 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       return res.status(404).send('Client not found');
     }
 
-    let { telegram_chat_id, telegram_title, deep_link, pixel_id, meta_token, lp_url } = req.body || {};
+    let { telegram_chat_id, telegram_title, deep_link, pixel_id, meta_token, lp_url, lp_event_mode, lp_anti_crawler } = req.body || {};
     telegram_chat_id = (telegram_chat_id || '').trim();
     telegram_title = (telegram_title || '').trim();
     deep_link = (deep_link || '').trim();
     pixel_id = (pixel_id || '').trim();
     meta_token = (meta_token || '').trim();
     lp_url = (lp_url || '').trim();
+    lp_event_mode = (lp_event_mode || '').toLowerCase() === 'subscribe' ? 'subscribe' : 'lead';
+    const lpAntiCrawlerFlag = lp_anti_crawler ? 1 : 0;
 
     if (!telegram_chat_id) {
       return res.status(400).send('telegram_chat_id is required');
@@ -2720,7 +2826,7 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
       db.prepare(
         `
         UPDATE channels
-        SET telegram_title = ?, deep_link = ?, pixel_id = ?, meta_token = ?, lp_url = ?, client_id = ?, is_active = 1
+        SET telegram_title = ?, deep_link = ?, pixel_id = ?, meta_token = ?, lp_url = ?, lp_event_mode = ?, lp_anti_crawler = ?, client_id = ?, is_active = 1
         WHERE id = ?
       `
       ).run(
@@ -2729,6 +2835,8 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         pixel_id || existing.pixel_id,
         meta_token || existing.meta_token,
         lp_url || existing.lp_url,
+        lp_event_mode || existing.lp_event_mode || 'lead',
+        typeof lpAntiCrawlerFlag === 'number' ? lpAntiCrawlerFlag : existing.lp_anti_crawler || 0,
         clientId,
         existing.id
       );
@@ -2763,9 +2871,11 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
           pixel_id,
           meta_token,
           lp_url,
+          lp_event_mode,
+          lp_anti_crawler,
           created_at,
           is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       `
       ).run(
         clientId,
@@ -2775,6 +2885,8 @@ app.post('/panel/client/:id/channels/new', requireAuth, (req, res) => {
         pixel_id || null,
         meta_token || null,
         lp_url || null,
+        lp_event_mode || 'lead',
+        lpAntiCrawlerFlag,
         nowTs
       );
     }
@@ -2895,6 +3007,8 @@ app.get('/lp/:channelId', async (req, res) => {
           ch.telegram_title,
           ch.deep_link,
           ch.pixel_id,
+          ch.lp_event_mode,
+          ch.lp_anti_crawler,
           c.public_key,
           c.name AS client_name
         FROM channels ch
@@ -2914,6 +3028,29 @@ app.get('/lp/:channelId', async (req, res) => {
     const clientName = row.client_name || 'Our Team';
     const publicKey = row.public_key || '';
     const telegramChatId = String(row.telegram_chat_id || '');
+    const lpModeRaw = (row.lp_event_mode || '').toLowerCase();
+    const lpMode = lpModeRaw === 'subscribe' ? 'subscribe' : 'lead';
+    const fbInitiateEvent = lpMode === 'subscribe' ? 'InitiateSubscribe' : 'InitiateLead';
+    const antiCrawlerEnabled = row.lp_anti_crawler ? true : false;
+
+    const antiCrawlerBlock = antiCrawlerEnabled
+      ? `
+    <script>
+      (function() {
+        try {
+          var ua = (navigator.userAgent || '').toLowerCase();
+          var badKeywords = ['bot', 'crawler', 'spider', 'preview', 'facebookexternalhit', 'facebot'];
+          for (var i = 0; i < badKeywords.length; i++) {
+            if (ua.indexOf(badKeywords[i]) !== -1) {
+              document.documentElement.innerHTML = '<head><meta name="robots" content="noindex"><title>Not available</title></head><body></body>';
+              return;
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
+    `
+      : '';
 
     const pixelBlock = pixelId
       ? `
@@ -3069,6 +3206,7 @@ app.get('/lp/:channelId', async (req, res) => {
         text-align: center;
       }
     </style>
+    ${antiCrawlerBlock}
     ${pixelBlock}
   </head>
   <body>
@@ -3150,8 +3288,8 @@ app.get('/lp/:channelId', async (req, res) => {
         }
 
         try {
-          if (window.fbq) {
-            fbq('track', 'Lead');
+          if (window.fbq && fbInitiateEvent) {
+            fbq('track', fbInitiateEvent);
           }
         } catch (err) {
           console.error('fbq error', err);

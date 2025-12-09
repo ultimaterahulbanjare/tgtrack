@@ -126,7 +126,9 @@ ensureColumns("clients", [
 
 // Channels me meta_token ensure karo
 ensureColumns("channels", [
-  { name: "meta_token", type: "TEXT" }
+  { name: "meta_token", type: "TEXT" },
+  { name: "lp_event_mode", type: "TEXT" },
+  { name: "lp_anti_crawler", type: "INTEGER" }
 ]);
 
 // pre_leads me created_at ensure karo (agar purana DB hai jisme ts tha)
