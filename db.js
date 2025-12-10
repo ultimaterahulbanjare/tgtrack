@@ -47,21 +47,6 @@ db.exec(`
   );
 `);
 
-
-// --- LANDING PAGES (LP Generator) ---
-db.exec(`
-  CREATE TABLE IF NOT EXISTS landing_pages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    client_id INTEGER NOT NULL,
-    channel_id TEXT NOT NULL,
-    slug TEXT UNIQUE,
-    lp_event_mode TEXT,
-    anti_crawler INTEGER DEFAULT 0,
-    created_at INTEGER,
-    updated_at INTEGER
-  );
-`);
-
 // --- JOINS ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS joins (
@@ -141,12 +126,16 @@ ensureColumns("clients", [
 
 // Channels me meta_token ensure karo
 ensureColumns("channels", [
-  { name: "meta_token", type: "TEXT" }
+  { name: "meta_token", type: "TEXT" },
+  { name: "lp_event_mode", type: "TEXT" },
+  { name: "lp_anti_crawler", type: "INTEGER" }
 ]);
 
 // pre_leads me created_at ensure karo (agar purana DB hai jisme ts tha)
 ensureColumns("pre_leads", [
-  { name: "created_at", type: "INTEGER" }
+  { name: "created_at", type: "INTEGER" },
+  { name: "client_id", type: "INTEGER" },
+  { name: "lp_id", type: "INTEGER" }
 ]);
 
 // joins me tracking + client_id ensure karo (safety, older DB ke liye)
@@ -165,5 +154,46 @@ ensureColumns("joins", [
   { name: "utm_term", type: "TEXT" },
   { name: "client_id", type: "INTEGER" }
 ]);
+
+
+// --- LANDING PAGES ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS landing_pages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    name TEXT,
+    slug TEXT UNIQUE,
+    template_key TEXT,
+    status TEXT DEFAULT 'draft',
+    html_config TEXT,
+    lp_event_mode TEXT,
+    anti_crawler INTEGER DEFAULT 0,
+    auto_host_url TEXT,
+    custom_domain_url TEXT,
+    created_at INTEGER,
+    updated_at INTEGER
+  );
+`);
+
+// --- LP EVENTS (per-landing-page stats: views / clicks / pre-leads) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS lp_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    lp_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    ip TEXT,
+    country TEXT,
+    user_agent TEXT,
+    device_type TEXT,
+    browser TEXT,
+    os TEXT,
+    source TEXT,
+    created_at INTEGER
+  );
+`);
+
 
 module.exports = db;
