@@ -4016,20 +4016,21 @@ app.get('/api/client/channels', requireAuth, (req, res) => {
     const clientId = clientRow.id;
 
     const channels = db
-      .prepare(\`
-        SELECT
-          id,
-          telegram_chat_id,
-          telegram_title,
-          deep_link,
-          pixel_id,
-          lp_event_mode,
-          lp_anti_crawler
-        FROM channels
-        WHERE client_id = ?
-        ORDER BY id DESC
-      \`)
-      .all(clientId);
+  .prepare(`
+    SELECT
+      id,
+      telegram_chat_id,
+      telegram_title,
+      deep_link,
+      pixel_id,
+      lp_event_mode,
+      lp_anti_crawler
+    FROM channels
+    WHERE client_id = ?
+    ORDER BY id DESC
+  `)
+  .all(clientId);
+
 
     return res.json({ success: true, channels });
   } catch (err) {
