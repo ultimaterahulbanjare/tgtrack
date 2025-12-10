@@ -4119,7 +4119,7 @@ app.post('/api/client/landing-pages', requireAuth, (req, res) => {
 
     if (status === 'published') {
       const cntRow = db
-        .prepare('SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published'')
+        .prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published'")
         .get(channel_id);
       const publishedCount = (cntRow && cntRow.cnt) || 0;
       if (publishedCount >= 10) {
@@ -4279,7 +4279,7 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
 
     if (status === 'published' && existing.status !== 'published') {
       const cntRow = db
-        .prepare('SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published' AND id != ?')
+        .prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published' AND id != ?")
         .get(channel_id, lpId);
       const publishedCount = (cntRow && cntRow.cnt) || 0;
       if (publishedCount >= 10) {
