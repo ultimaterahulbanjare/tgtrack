@@ -2276,7 +2276,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
 
     // Total joins for this client (via channels mapping)
     const totalRow = db
-      .prepare(\`
+      .prepare(`
         SELECT COUNT(*) AS cnt
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
