@@ -2245,10 +2245,15 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     }
 
     // Ensure client belongs to this user:
-    // - admin/owner: owner_user_id match
+    // - admin: can see any client
+    // - owner: owner_user_id match
     // - client: login_user_id match
     let client = null;
-    if (user.role === 'admin' || user.role === 'owner') {
+    if (user.role === 'admin') {
+      client = db
+        .prepare('SELECT * FROM clients WHERE id = ?')
+        .get(clientId);
+    } else if (user.role === 'owner') {
       client = db
         .prepare('SELECT * FROM clients WHERE id = ? AND owner_user_id = ?')
         .get(clientId, user.id);
@@ -2271,26 +2276,26 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
 
     // Total joins for this client (via channels mapping)
     const totalRow = db
-      .prepare(`
+      .prepare(\`
         SELECT COUNT(*) AS cnt
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
-      `)
+      \`)
       .get(clientId);
     const totalJoins = totalRow.cnt || 0;
 
     // Today joins for this client
     const todayRow = db
       .prepare(
-        `
+        \`
         SELECT COUNT(*) AS cnt
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
           AND j.joined_at >= ?
           AND j.joined_at <= ?
-      `
+      \`
       )
       .get(clientId, startOfDayTs, now);
     const todayJoins = todayRow.cnt || 0;
@@ -2299,36 +2304,53 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
     const rows7 = db
       .prepare(
-        `
+        \`
         SELECT j.joined_at
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
           AND j.joined_at >= ?
-        ORDER BY j.joined_at ASC
-      `
+      \`
       )
       .all(clientId, sevenDaysAgoTs);
 
-    const byDateMap = {};
+    const last7DaysMap = {};
     for (const r of rows7) {
-      const dateKey = formatDateYYYYMMDD(r.joined_at);
-      byDateMap[dateKey] = (byDateMap[dateKey] || 0) + 1;
+      const dStr = new Date(r.joined_at * 1000).toISOString().substring(0, 10);
+      last7DaysMap[dStr] = (last7DaysMap[dStr] || 0) + 1;
     }
-    const last7Days = Object.keys(byDateMap)
+    const last7Days = Object.keys(last7DaysMap)
       .sort()
-      .map((date) => ({ date, count: byDateMap[date] }));
+      .map((d) => ({ date: d, count: last7DaysMap[d] }));
 
-    const errorCode = req.query.error || '';
+    // Plan + usage info
+    const plan = client.plan || 'single';
+    const maxChannels = client.max_channels || 1;
+
+    const channelConfigs = db
+      .prepare(
+        \`
+        SELECT *
+        FROM channels
+        WHERE client_id = ?
+        ORDER BY created_at DESC, id DESC
+      \`
+      )
+      .all(clientId);
+
+    const channelCount = channelConfigs.length;
+    const canAddMoreChannels = channelCount < maxChannels;
+
     let errorHtml = '';
-    if (errorCode === 'chlimit') {
-      errorHtml = '<div style="margin-top:8px;color:#f97373;font-size:12px;">Channel limit reached for this plan. Please remove an existing channel or upgrade the plan.</div>';
+    if (!canAddMoreChannels) {
+      errorHtml =
+        '<div style="margin-top:8px;color:#f97373;font-size:12px;">This client has reached the max channels for its plan. Please remove an existing channel or upgrade the plan.</div>';
     }
 
     // By channel stats (from joins)
     const byChannelStats = db
       .prepare(
-        `
+        \`
         SELECT
           ch.telegram_chat_id AS channel_id,
           ch.telegram_title AS channel_title,
@@ -2338,95 +2360,70 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
         WHERE ch.client_id = ?
         GROUP BY ch.telegram_chat_id, ch.telegram_title
         ORDER BY total DESC
-      `
+      \`
       )
       .all(clientId);
 
     const trackingBase = process.env.PUBLIC_TRACKING_BASE_URL || process.env.PUBLIC_BACKEND_URL || '';
-
 
     const channelTotalsMap = {};
     for (const row of byChannelStats) {
       channelTotalsMap[String(row.channel_id)] = row.total;
     }
 
-
     // Per-channel today joins
-    const channelTodayRows = db
+    const todayByChannel = db
       .prepare(
-        `
+        \`
         SELECT
           ch.telegram_chat_id AS channel_id,
-          COUNT(j.id) AS cnt
-        FROM channels ch
-        LEFT JOIN joins j
-          ON j.channel_id = ch.telegram_chat_id
+          COUNT(*) AS total
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
+        WHERE ch.client_id = ?
           AND j.joined_at >= ?
           AND j.joined_at <= ?
-        WHERE ch.client_id = ?
         GROUP BY ch.telegram_chat_id
-      `
+      \`
       )
-      .all(startOfDayTs, now, clientId);
+      .all(clientId, startOfDayTs, now);
 
     const channelTodayMap = {};
-    for (const r of channelTodayRows) {
-      channelTodayMap[String(r.channel_id)] = r.cnt || 0;
+    for (const row of todayByChannel) {
+      channelTodayMap[String(row.channel_id)] = row.total;
     }
 
     // Per-channel last 7 days joins
-    const channel7dRows = db
+    const sevenByChannel = db
       .prepare(
-        `
+        \`
         SELECT
           ch.telegram_chat_id AS channel_id,
-          COUNT(j.id) AS cnt
-        FROM channels ch
-        LEFT JOIN joins j
-          ON j.channel_id = ch.telegram_chat_id
-          AND j.joined_at >= ?
+          COUNT(*) AS total
+        FROM joins j
+        JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
+          AND j.joined_at >= ?
         GROUP BY ch.telegram_chat_id
-      `
+      \`
       )
-      .all(sevenDaysAgoTs, clientId);
+      .all(clientId, sevenDaysAgoTs);
 
     const channel7dMap = {};
-    for (const r of channel7dRows) {
-      channel7dMap[String(r.channel_id)] = r.cnt || 0;
+    for (const row of sevenByChannel) {
+      channel7dMap[String(row.channel_id)] = row.total;
     }
 
-    // Channel configs for this client
-    const channelConfigs = db
-      .prepare(
-        `
-        SELECT
-          id,
-          telegram_chat_id,
-          telegram_title,
-          deep_link,
-          pixel_id,
-          lp_url,
-          lp_event_mode,
-          lp_anti_crawler,
-          is_active,
-          created_at
-        FROM channels
-        WHERE client_id = ?
-        ORDER BY created_at DESC, id DESC
-      `
-      )
-      .all(clientId);
-
-    // Recent joins
     const recentJoins = db
       .prepare(
-        `
+        \`
         SELECT
-          j.telegram_username,
-          j.channel_title,
-          j.channel_id,
           j.joined_at,
+          j.telegram_user_id,
+          j.telegram_first_name,
+          j.telegram_last_name,
+          j.telegram_username,
+          j.channel_id,
           j.ip,
           j.country,
           j.device_type,
@@ -2436,14 +2433,13 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           j.utm_source,
           j.utm_medium,
           j.utm_campaign,
-          j.utm_content,
-          j.utm_term
+          ch.telegram_title AS channel_title
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
         ORDER BY j.joined_at DESC
         LIMIT 50
-      `
+      \`
       )
       .all(clientId);
 
@@ -2481,68 +2477,69 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             color: #6b7280;
             font-size: 12px;
           }
-          .cards {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-            margin-bottom: 20px;
-          }
-          .card {
-            background: #020617;
-            border-radius: 14px;
-            padding: 12px 14px;
-            border: 1px solid #1f2937;
-            min-width: 150px;
-          }
-          .card h2 {
-            font-size: 13px;
-            color: #9ca3af;
-            margin: 0 0 4px 0;
-          }
-          .card .value {
-            font-size: 20px;
-            font-weight: 600;
-          }
           table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 10px;
+            margin-top: 12px;
           }
           th, td {
-            padding: 8px 10px;
-            border-bottom: 1px solid #1f2937;
+            border-bottom: 1px solid #111827;
+            padding: 6px 8px;
+            text-align: left;
             font-size: 12px;
-            white-space: nowrap;
           }
           th {
-            text-align: left;
-            color: #9ca3af;
+            background: #020617;
+            position: sticky;
+            top: 0;
+            z-index: 1;
           }
-          code {
-            background: #111827;
-            padding: 2px 4px;
-            border-radius: 4px;
+          tr:nth-child(even) {
+            background: #020617;
+          }
+          .pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2px 8px;
+            border-radius: 999px;
             font-size: 11px;
+            border: 1px solid #1f2937;
+          }
+          .pill-green {
+            background: #022c22;
+            color: #6ee7b7;
+            border-color: #047857;
+          }
+          .pill-red {
+            background: #450a0a;
+            color: #fecaca;
+            border-color: #b91c1c;
           }
           .section-title {
-            font-size: 15px;
-            margin: 16px 0 4px 0;
+            margin-top: 24px;
+            margin-bottom: 6px;
+            font-size: 14px;
           }
-          .channels-form-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: flex-end;
-            margin-bottom: 10px;
+          .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+          }
+          .card {
+            border-radius: 12px;
+            border: 1px solid #111827;
+            padding: 12px;
+            background: radial-gradient(circle at top left, #0f172a, #020617);
           }
           .field {
-            display: flex;
-            flex-direction: column;
-            font-size: 12px;
+            margin-bottom: 8px;
           }
           .field label {
-            margin-bottom: 4px;
-            color: #9ca3af;
+            display: block;
+            font-size: 12px;
+            margin-bottom: 2px;
           }
           .field input {
             padding: 6px 8px;
@@ -2573,68 +2570,44 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
             cursor: pointer;
             font-size: 11px;
           }
-          @media (max-width: 900px) {
-            table {
-              display: block;
-              overflow-x: auto;
-            }
-            .channels-form-row {
-              flex-direction: column;
-              align-items: stretch;
-            }
+          .btn-danger {
+            background: linear-gradient(135deg, #ef4444, #b91c1c);
+            color: #fef2f2;
+          }
+          .pill-plan {
+            background: #020617;
+            border-color: #1f2937;
+            color: #e5e7eb;
           }
         </style>
       </head>
       <body>
         <div class="topbar">
           <div>
-            <a href="/panel">&larr; Back to panel</a>
-            <h1 style="margin-top:8px;">${client.name || 'Client'}</h1>
+            <h1>${client.name || 'Client workspace'}</h1>
             <div class="muted">
-              Slug: <code>${client.slug || ''}</code> · Plan: ${client.plan || ''} · Max channels: ${client.max_channels || ''}
+              Client ID ${client.id} · Plan: ${plan} · Max channels: ${maxChannels} · Total joins: ${totalJoins}
             </div>
-            <div class="muted">
-              Public key: <code>${client.public_key || ''}</code> · Secret key: <code>${client.secret_key || ''}</code>
-            </div>
+          </div>
+          <div>
+            <a href="/panel">← Back to panel</a>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <div class="muted">Today joins</div>
+            <div style="font-size:24px;font-weight:700;">${todayJoins}</div>
+          </div>
+          <div class="card">
+            <div class="muted">Total joins</div>
+            <div style="font-size:24px;font-weight:700;">${totalJoins}</div>
+          </div>
+          <div class="card">
+            <div class="muted">Channels used</div>
+            <div style="font-size:24px;font-weight:700;">${channelCount} / ${maxChannels}</div>
             ${errorHtml}
           </div>
-        </div>
-
-        <div class="cards">
-          <div class="card">
-            <h2>Total joins</h2>
-            <div class="value">${totalJoins}</div>
-          </div>
-          <div class="card">
-            <h2>Today joins</h2>
-            <div class="value">${todayJoins}</div>
-          </div>
-        </div>
-
-        <div>
-          <div class="section-title">Landing page integration snippet</div>
-          <div class="muted">
-            Paste this script into your landing page. Replace <code>CHANNEL_ID_HERE</code> with the Telegram channel_id /
-            chat_id you configured below.
-          </div>
-          <pre style="margin-top:8px;background:#020617;border-radius:10px;border:1px solid #1f2937;padding:10px;font-size:11px;overflow-x:auto;">
-<code>&lt;script&gt;
-  const UTS_PUBLIC_KEY = "${client.public_key || ''}";
-  const UTS_API_BASE   = "${trackingBase}";
-  const UTS_CHANNEL_ID = "CHANNEL_ID_HERE";
-  // Example: call pageview
-  fetch(UTS_API_BASE + "/api/v1/track/pageview", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      public_key: UTS_PUBLIC_KEY,
-      channel_id: UTS_CHANNEL_ID,
-      url: window.location.href,
-      user_agent: navigator.userAgent
-    })
-  });
-&lt;/script&gt;</code>
-          </pre>
         </div>
 
         <h2 class="section-title">Last 7 days</h2>
@@ -2651,11 +2624,11 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                 ? `<tr><td colspan="2" class="muted">No data yet</td></tr>`
                 : last7Days
                     .map(
-                      (d) => `
+                      (d) => \`
               <tr>
-                <td>${d.date}</td>
-                <td>${d.count}</td>
-              </tr>`
+                <td>\${d.date}</td>
+                <td>\${d.count}</td>
+              </tr>\`
                     )
                     .join('')
             }
@@ -2666,35 +2639,67 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
         <table>
           <thead>
             <tr>
-              <th>Channel title</th>
+              <th>Title</th>
               <th>Channel ID</th>
-              <th>Total joins</th>
+              <th>Deep link</th>
+              <th>Pixel</th>
+              <th>Joins (all time)</th>
+              <th>Today</th>
+              <th>Last 7 days</th>
+              <th>LP</th>
             </tr>
           </thead>
           <tbody>
             ${
-              byChannelStats.length === 0
-                ? `<tr><td colspan="3" class="muted">No channels yet</td></tr>`
-                : byChannelStats
-                    .map(
-                      (c) => `
+              channelConfigs.length === 0
+                ? '<tr><td colspan="8" class="muted">No channel config yet</td></tr>'
+                : channelConfigs
+                    .map((ch) => {
+                      const created = ch.created_at
+                        ? new Date(ch.created_at * 1000).toISOString().substring(0, 10)
+                        : '';
+                      const status = ch.is_active ? 'Active' : 'Inactive';
+                      const tot = channelTotalsMap[String(ch.telegram_chat_id)] || 0;
+                      const todayCount = channelTodayMap[String(ch.telegram_chat_id)] || 0;
+                      const last7Count = channel7dMap[String(ch.telegram_chat_id)] || 0;
+                      const autoLpUrl = `/lp/${ch.id}`;
+                      const customLp = ch.lp_url || '';
+                      const customDisplay = customLp
+                        ? `<a href="\${customLp}" target="_blank">\${customLp}</a>`
+                        : 'Not set';
+                      const lpModeRaw = (ch.lp_event_mode || '').toLowerCase();
+                      const lpModeLabel =
+                        lpModeRaw === 'subscribe' ? 'InitiateSubscribe → Subscribe' : 'InitiateLead → Lead';
+                      const antiCrawlerLabel = ch.lp_anti_crawler ? 'On' : 'Off';
+                      return \`
               <tr>
-                <td>${c.channel_title || '(no title)'}</td>
-                <td>${c.channel_id}</td>
-                <td>${c.total}</td>
-              </tr>`
-                    )
+                <td>\${ch.telegram_title || '(no title)'}</td>
+                <td>\${ch.telegram_chat_id}</td>
+                <td>\${ch.deep_link || ''}</td>
+                <td>\${ch.pixel_id || ''}</td>
+                <td>\${tot}</td>
+                <td>\${todayCount}</td>
+                <td>\${last7Count}</td>
+                <td>
+                  <div style="display:flex;flex-direction:column;gap:4px;">
+                    <span class="muted">Auto: <a href="\${autoLpUrl}" target="_blank">\${autoLpUrl}</a></span>
+                    <span class="muted">Custom: \${customDisplay}</span>
+                    <span class="muted">Event: \${lpModeLabel}, Anti-crawler: \${antiCrawlerLabel}</span>
+                  </div>
+                </td>
+              </tr>\`;
+                    })
                     .join('')
             }
           </tbody>
         </table>
 
-        <h2 class="section-title">Manage channels</h2>
-        <form method="POST" action="/panel/client/${clientId}/channels/new">
-          <div class="channels-form-row">
+        <h2 class="section-title">Add / update channel</h2>
+        <div class="card">
+          <form method="POST" action="/panel/client/${client.id}/channels">
             <div class="field">
               <label for="telegram_title">Channel title</label>
-              <input id="telegram_title" name="telegram_title" type="text" placeholder="My Telegram Channel" />
+              <input id="telegram_title" name="telegram_title" type="text" required />
             </div>
             <div class="field">
               <label for="telegram_chat_id">Channel ID (chat_id)</label>
@@ -2733,97 +2738,23 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               </div>
             </div>
             <div class="field">
-              <label>LP anti-crawler</label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:4px;">
+              <label>
                 <input type="checkbox" name="lp_anti_crawler" value="1" />
-                <span>Enable basic bot / crawler blocking on auto LP</span>
+                Enable anti-crawler for this channel
               </label>
             </div>
-            <div class="field">
-              <label>&nbsp;</label>
-              <button type="submit" class="btn">Save channel</button>
-            </div>
-          </div>
-        </form>
+            <button class="btn" type="submit">Save channel</button>
+          </form>
+        </div>
 
+        <h2 class="section-title">Recent joins (last 50)</h2>
         <table>
           <thead>
             <tr>
-              <th>Title</th>
-              <th>Channel ID</th>
-              <th>Deep link</th>
-              <th>Pixel ID</th>
-              <th>LP</th>
-              <th>LP events</th>
-              <th>Status</th>
-              <th>Total joins</th>
-              <th>Today</th>
-              <th>Last 7 days</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${
-              channelConfigs.length === 0
-                ? `<tr><td colspan="8" class="muted">No channel config yet</td></tr>`
-                : channelConfigs
-                    .map((ch) => {
-                      const created = ch.created_at
-                        ? new Date(ch.created_at * 1000).toISOString().substring(0, 10)
-                        : '';
-                      const status = ch.is_active ? 'Active' : 'Inactive';
-                      const tot = channelTotalsMap[String(ch.telegram_chat_id)] || 0;
-                      const todayCount = channelTodayMap[String(ch.telegram_chat_id)] || 0;
-                      const last7Count = channel7dMap[String(ch.telegram_chat_id)] || 0;
-                      const autoLpUrl = `/lp/${ch.id}`;
-                      const customLp = ch.lp_url || '';
-                      const customDisplay = customLp
-                        ? `<a href="${customLp}" target="_blank">${customLp}</a>`
-                        : 'Not set';
-                      const lpModeRaw = (ch.lp_event_mode || '').toLowerCase();
-                      const lpModeLabel =
-                        lpModeRaw === 'subscribe' ? 'InitiateSubscribe → Subscribe' : 'InitiateLead → Lead';
-                      const antiCrawlerLabel = ch.lp_anti_crawler ? 'On' : 'Off';
-                      return `
-              <tr>
-                <td>${ch.telegram_title || '(no title)'}</td>
-                <td>${ch.telegram_chat_id}</td>
-                <td>${ch.deep_link || ''}</td>
-                <td>${ch.pixel_id || ''}</td>
-                <td>
-                  <div style="display:flex;flex-direction:column;gap:4px;">
-                    <div>
-                      <span style="font-size:11px;color:#9ca3af;margin-right:6px;">Auto LP</span>
-                      <a href="${autoLpUrl}" target="_blank" class="btn btn-xs">Open</a>
-                    </div>
-                    <div style="font-size:11px;color:#9ca3af;">
-                      Custom: ${customDisplay}
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <div style="font-size:11px;color:#e5e7eb;line-height:1.3;">
-                    <div>${lpModeLabel}</div>
-                    <div>Anti-crawler: <strong>${antiCrawlerLabel}</strong></div>
-                  </div>
-                </td>
-                <td>${status}</td>
-                <td>${tot}</td>
-                <td>${todayCount}</td>
-                <td>${last7Count}</td>
-                <td>${created}</td>
-              </tr>`;
-                    })
-                    .join('')
-            }
-          </tbody>
-        </table>
-
-        <h2 class="section-title">Recent joins</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
+              <th>Joined at</th>
+              <th>User ID</th>
+              <th>First name</th>
+              <th>Last name</th>
               <th>Username</th>
               <th>Channel</th>
               <th>IP</th>
@@ -2832,36 +2763,39 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
               <th>Browser</th>
               <th>OS</th>
               <th>Source</th>
-              <th>UTM Source</th>
-              <th>UTM Medium</th>
-              <th>UTM Campaign</th>
+              <th>UTM source</th>
+              <th>UTM medium</th>
+              <th>UTM campaign</th>
             </tr>
           </thead>
           <tbody>
             ${
               recentJoins.length === 0
-                ? `<tr><td colspan="12" class="muted">No joins yet</td></tr>`
+                ? '<tr><td colspan="15" class="muted">No joins yet</td></tr>'
                 : recentJoins
                     .map((j) => {
                       const dt = new Date(j.joined_at * 1000)
                         .toISOString()
                         .replace('T', ' ')
                         .substring(0, 19);
-                      return `
+                      return \`
               <tr>
-                <td>${dt}</td>
-                <td>${j.telegram_username || '(no username)'}</td>
-                <td>${j.channel_title || ''}</td>
-                <td>${j.ip || ''}</td>
-                <td>${j.country || ''}</td>
-                <td>${j.device_type || ''}</td>
-                <td>${j.browser || ''}</td>
-                <td>${j.os || ''}</td>
-                <td>${j.source || ''}</td>
-                <td>${j.utm_source || ''}</td>
-                <td>${j.utm_medium || ''}</td>
-                <td>${j.utm_campaign || ''}</td>
-              </tr>`;
+                <td>\${dt}</td>
+                <td>\${j.telegram_user_id}</td>
+                <td>\${j.telegram_first_name || ''}</td>
+                <td>\${j.telegram_last_name || ''}</td>
+                <td>\${j.telegram_username || '(no username)'}</td>
+                <td>\${j.channel_title || ''}</td>
+                <td>\${j.ip || ''}</td>
+                <td>\${j.country || ''}</td>
+                <td>\${j.device_type || ''}</td>
+                <td>\${j.browser || ''}</td>
+                <td>\${j.os || ''}</td>
+                <td>\${j.source || ''}</td>
+                <td>\${j.utm_source || ''}</td>
+                <td>\${j.utm_medium || ''}</td>
+                <td>\${j.utm_campaign || ''}</td>
+              </tr>\`;
                     })
                     .join('')
             }
@@ -2875,6 +2809,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     res.status(500).send('Internal error');
   }
 });
+
 
 
 // POST /panel/client/:id/channels/new - create or update channel for this client
@@ -4184,7 +4119,7 @@ app.post('/api/client/landing-pages', requireAuth, (req, res) => {
 
     if (status === 'published') {
       const cntRow = db
-        .prepare('SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = "published"')
+        .prepare('SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published'')
         .get(channel_id);
       const publishedCount = (cntRow && cntRow.cnt) || 0;
       if (publishedCount >= 10) {
@@ -4273,9 +4208,10 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
       return res.status(403).json({ success: false, error: 'Not a client user' });
     }
 
-    const clientRow = db
-      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
-      .get(user.id);
+    const cntRow = db
+  prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published'")
+  get(channel_id);
+
 
     if (!clientRow) {
       return res.status(404).json({ success: false, error: 'Client workspace not found' });
@@ -4343,7 +4279,7 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
 
     if (status === 'published' && existing.status !== 'published') {
       const cntRow = db
-        .prepare('SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = "published" AND id != ?')
+        .prepare('SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published' AND id != ?')
         .get(channel_id, lpId);
       const publishedCount = (cntRow && cntRow.cnt) || 0;
       if (publishedCount >= 10) {
@@ -4434,9 +4370,10 @@ app.post('/api/owner/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing email or password' });
     }
 
-    const user = db
-      .prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
-      .get(normEmail);
+    const cntRow = db
+  prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published' AND id != ?")
+  get(channel_id, lpId);
+
 
     if (!user) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
