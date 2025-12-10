@@ -2414,25 +2414,11 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
       channel7dMap[String(row.channel_id)] = row.total;
     }
 
-    const recentJoins = db
+        const recentJoins = db
       .prepare(
         `
         SELECT
-          j.joined_at,
-          j.telegram_user_id,
-          j.telegram_first_name,
-          j.telegram_last_name,
-          j.telegram_username,
-          j.channel_id,
-          j.ip,
-          j.country,
-          j.device_type,
-          j.browser,
-          j.os,
-          j.source,
-          j.utm_source,
-          j.utm_medium,
-          j.utm_campaign,
+          j.*,
           ch.telegram_title AS channel_title
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
