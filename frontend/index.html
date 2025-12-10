@@ -678,6 +678,30 @@
         }
       };
 
+      const onStatusChange = async (lpId, newStatus) => {
+        setMsg('', 'neutral');
+        setLoading(true);
+        try {
+          const res = await fetch(API_BASE + '/api/client/landing-pages/' + lpId, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus })
+          });
+          const data = await res.json();
+          if (!data.success) {
+            setMsg(data.message || data.error || 'Failed to update status.', 'err');
+          } else {
+            setMsg('Status updated.', 'ok');
+            load();
+          }
+        } catch (err) {
+          console.error(err);
+          setMsg('Network error while updating status.', 'err');
+        } finally {
+          setLoading(false);
+        }
+      };
+
       return (
         <div className="layout-two">
           <div className="card">
@@ -763,7 +787,7 @@
                 </label>
               </div>
               <div>
-                <label>Status</label>
+                <label>Initial status</label>
                 <select
                   name="status"
                   value={form.status}
@@ -818,7 +842,17 @@
                       <td>{r.name}</td>
                       <td>{r.telegram_title || ('Channel ' + r.channel_id)}</td>
                       <td>{r.template_key || '-'}</td>
-                      <td>{r.status}</td>
+                      <td>
+                        <select
+                          value={r.status}
+                          onChange={(e) => onStatusChange(r.id, e.target.value)}
+                          style={{padding:'3px 6px',borderRadius:8,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:11}}
+                        >
+                          <option value="draft">draft</option>
+                          <option value="published">published</option>
+                          <option value="archived">archived</option>
+                        </select>
+                      </td>
                       <td>{r.views || 0}</td>
                       <td>{r.pre_leads || 0}</td>
                       <td style={{fontSize:10}}>
