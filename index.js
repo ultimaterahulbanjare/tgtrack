@@ -4370,17 +4370,12 @@ app.post('/api/owner/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing email or password' });
     }
 
-    const cntRow = db
-  prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published' AND id != ?")
-  get(channel_id, lpId);
-
+    const user = db
+      .prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
+      .get(normEmail);
 
     if (!user) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
-    }
-
-    if (user.role !== 'admin' && user.role !== 'owner') {
-      return res.status(403).json({ success: false, error: 'Not an owner/admin account' });
     }
 
     const ok = await bcrypt.compare(password, user.password_hash);
@@ -4388,11 +4383,15 @@ app.post('/api/owner/login', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
 
+    if (user.role !== 'admin' && user.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'Not an owner/admin account' });
+    }
+
     const token = signAuthToken(user.id);
     res.cookie('auth', token, {
       httpOnly: true,
       sameSite: 'lax'
-      // secure: true // HTTPS only
+      // secure: true // enable if behind HTTPS
     });
 
     return res.json({
