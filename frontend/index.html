@@ -576,6 +576,269 @@
       );
     }
 
+    function ClientLpManager() {
+      const [channels,setChannels] = useState([]);
+      const [rows,setRows] = useState([]);
+      const [loading,setLoading] = useState(false);
+      const [msg,typ,setMsg] = useStatus();
+      const [form,setForm] = useState({
+        name: '',
+        channel_id: '',
+        template_key: 'generic',
+        lp_event_mode: 'lead',
+        anti_crawler: false,
+        status: 'draft'
+      });
+
+      const load = async () => {
+        setMsg('', 'neutral');
+        setLoading(true);
+        try {
+          const [lpRes, chRes] = await Promise.all([
+            fetch(API_BASE + '/api/client/landing-pages'),
+            fetch(API_BASE + '/api/client/channels')
+          ]);
+          const lpData = await lpRes.json();
+          const chData = await chRes.json();
+
+          if (!lpData.success) {
+            setMsg(lpData.error || 'Unable to load landing pages.', 'err');
+          } else {
+            setRows(lpData.landing_pages || []);
+          }
+
+          if (!chData.success) {
+            setMsg(prev => (prev ? prev + ' Also failed to load channels.' : (chData.error || 'Unable to load channels.')), 'err');
+          } else {
+            setChannels(chData.channels || []);
+          }
+
+          if ((!lpData.landing_pages || !lpData.landing_pages.length) && (!chData.channels || !chData.channels.length)) {
+            setMsg('No channels or landing pages yet. Add a channel from your main panel first.', 'neutral');
+          } else if (lpData.landing_pages && lpData.landing_pages.length) {
+            setMsg('Loaded ' + lpData.landing_pages.length + ' landing page(s).', 'ok');
+          }
+        } catch (err) {
+          console.error(err);
+          setMsg('Network error while loading LPs/channels.', 'err');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => { load(); }, []);
+
+      const onChange = (e) => {
+        const { name, value, type, checked } = e.target;
+        setForm(prev => ({
+          ...prev,
+          [name]: type === 'checkbox' ? checked : value
+        }));
+      };
+
+      const onCreate = async (e) => {
+        e.preventDefault();
+        setMsg('', 'neutral');
+        if (!form.name || !form.channel_id) {
+          setMsg('Please enter LP name and select a channel.', 'err');
+          return;
+        }
+        setLoading(true);
+        try {
+          const payload = {
+            name: form.name,
+            channel_id: form.channel_id ? Number(form.channel_id) : null,
+            template_key: form.template_key || 'generic',
+            lp_event_mode: form.lp_event_mode || 'lead',
+            anti_crawler: !!form.anti_crawler,
+            status: form.status || 'draft'
+          };
+          const res = await fetch(API_BASE + '/api/client/landing-pages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          if (!data.success) {
+            setMsg(data.message || data.error || 'Failed to create landing page.', 'err');
+          } else {
+            setMsg('Landing page created.', 'ok');
+            setForm(prev => ({
+              ...prev,
+              name: '',
+              status: 'draft'
+            }));
+            load();
+          }
+        } catch (err) {
+          console.error(err);
+          setMsg('Network error while creating LP.', 'err');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="layout-two">
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Landing Page generator (beta)</h2>
+                <div className="muted" style={{fontSize:12}}>
+                  Requires an active client session. Start with a simple LP per channel (max 10 published per channel).
+                </div>
+              </div>
+            </div>
+            <form onSubmit={onCreate}>
+              <div>
+                <label>Internal LP name</label>
+                <input
+                  type="text"
+                  name="name"
+                  value={form.name}
+                  onChange={onChange}
+                  placeholder="Matchday v1 / Diwali Offer LP"
+                  required
+                />
+              </div>
+              <div>
+                <label>Channel</label>
+                <select
+                  name="channel_id"
+                  value={form.channel_id}
+                  onChange={onChange}
+                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
+                >
+                  <option value="">Select a channel…</option>
+                  {channels.map(ch => (
+                    <option key={ch.id} value={ch.id}>
+                      {(ch.telegram_title || ch.telegram_chat_id || 'Channel ' + ch.id) + ' (ID ' + ch.id + ')'}
+                    </option>
+                  ))}
+                </select>
+                <div className="muted" style={{fontSize:11,marginTop:3}}>
+                  These are channels linked to your client workspace.
+                </div>
+              </div>
+              <div>
+                <label>Template</label>
+                <select
+                  name="template_key"
+                  value={form.template_key}
+                  onChange={onChange}
+                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
+                >
+                  <option value="generic">Generic promo</option>
+                  <option value="forex">Forex signals</option>
+                  <option value="cricket">Cricket prediction</option>
+                  <option value="crypto">Crypto alerts</option>
+                  <option value="personal">Personal brand</option>
+                </select>
+              </div>
+              <div>
+                <label>Event mapping (Option A)</label>
+                <select
+                  name="lp_event_mode"
+                  value={form.lp_event_mode}
+                  onChange={onChange}
+                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
+                >
+                  <option value="lead">InitiateLead → Lead</option>
+                  <option value="subscribe">InitiateSubscribe → Subscribe</option>
+                </select>
+                <div className="muted" style={{fontSize:11,marginTop:3}}>
+                  One pixel = one main optimization event (Lead or Subscribe) across all LPs/channels.
+                </div>
+              </div>
+              <div>
+                <label>
+                  <input
+                    type="checkbox"
+                    name="anti_crawler"
+                    checked={form.anti_crawler}
+                    onChange={onChange}
+                    style={{marginRight:6}}
+                  />
+                  Enable anti-crawler for this LP
+                </label>
+              </div>
+              <div>
+                <label>Status</label>
+                <select
+                  name="status"
+                  value={form.status}
+                  onChange={onChange}
+                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
+                >
+                  <option value="draft">Draft</option>
+                  <option value="published">Published</option>
+                  <option value="archived">Archived</option>
+                </select>
+                <div className="muted" style={{fontSize:11,marginTop:3}}>
+                  Publishing respects the 10 published LPs per channel limit at backend.
+                </div>
+              </div>
+              <button className="primary" type="submit" disabled={loading}>
+                {loading ? 'Saving…' : 'Create LP'}
+              </button>
+              {msg && <div className={'status ' + typ} style={{marginTop:8}}>{msg}</div>}
+            </form>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Your landing pages</h2>
+                <div className="muted" style={{fontSize:12}}>
+                  Basic per-LP stats (views, pre-leads) via /lp2 + /api/v1/lp-event.
+                </div>
+              </div>
+              <button className="secondary" type="button" onClick={load}>
+                {loading ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
+            {rows && rows.length ? (
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Channel</th>
+                    <th>Template</th>
+                    <th>Status</th>
+                    <th>Views</th>
+                    <th>Pre-leads</th>
+                    <th>Auto URL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.id}>
+                      <td>{r.id}</td>
+                      <td>{r.name}</td>
+                      <td>{r.telegram_title || ('Channel ' + r.channel_id)}</td>
+                      <td>{r.template_key || '-'}</td>
+                      <td>{r.status}</td>
+                      <td>{r.views || 0}</td>
+                      <td>{r.pre_leads || 0}</td>
+                      <td style={{fontSize:10}}>
+                        {r.slug ? '/lp2/' + r.slug : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="muted" style={{fontSize:12,marginTop:6}}>
+                No landing pages yet.
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+
     function App() {
       const [tab,setTab] = useState('signup');
       return (
@@ -594,8 +857,11 @@
             <button className={'tab-btn ' + (tab==='client-me'?'active':'')} onClick={()=>setTab('client-me')}>
               3) Session preview
             </button>
+            <button className={'tab-btn ' + (tab==='lp'?'active':'')} onClick={()=>setTab('lp')}>
+              4) Landing Pages (beta)
+            </button>
             <button className={'tab-btn ' + (tab==='owner'?'active':'')} onClick={()=>setTab('owner')}>
-              4) Owner approvals
+              5) Owner approvals
             </button>
           </div>
 
@@ -607,6 +873,7 @@
             </div>
           )}
           {tab === 'client-me' && <ClientMeCard />}
+          {tab === 'lp' && <ClientLpManager />}
           {tab === 'owner' && (
             <div className="layout-two">
               <OwnerLoginCard />
