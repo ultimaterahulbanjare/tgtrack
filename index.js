@@ -2281,21 +2281,21 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
-      \`)
+      `)
       .get(clientId);
     const totalJoins = totalRow.cnt || 0;
 
     // Today joins for this client
     const todayRow = db
       .prepare(
-        \`
+        `
         SELECT COUNT(*) AS cnt
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
           AND j.joined_at >= ?
           AND j.joined_at <= ?
-      \`
+      `
       )
       .get(clientId, startOfDayTs, now);
     const todayJoins = todayRow.cnt || 0;
@@ -2304,13 +2304,13 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     const sevenDaysAgoTs = now - 7 * 24 * 60 * 60;
     const rows7 = db
       .prepare(
-        \`
+        `
         SELECT j.joined_at
         FROM joins j
         JOIN channels ch ON ch.telegram_chat_id = j.channel_id
         WHERE ch.client_id = ?
           AND j.joined_at >= ?
-      \`
+      `
       )
       .all(clientId, sevenDaysAgoTs);
 
@@ -2329,12 +2329,12 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
 
     const channelConfigs = db
       .prepare(
-        \`
+        `
         SELECT *
         FROM channels
         WHERE client_id = ?
         ORDER BY created_at DESC, id DESC
-      \`
+      `
       )
       .all(clientId);
 
@@ -2350,7 +2350,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     // By channel stats (from joins)
     const byChannelStats = db
       .prepare(
-        \`
+        `
         SELECT
           ch.telegram_chat_id AS channel_id,
           ch.telegram_title AS channel_title,
@@ -2360,7 +2360,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
         WHERE ch.client_id = ?
         GROUP BY ch.telegram_chat_id, ch.telegram_title
         ORDER BY total DESC
-      \`
+      `
       )
       .all(clientId);
 
@@ -2374,7 +2374,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     // Per-channel today joins
     const todayByChannel = db
       .prepare(
-        \`
+        `
         SELECT
           ch.telegram_chat_id AS channel_id,
           COUNT(*) AS total
@@ -2384,7 +2384,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
           AND j.joined_at >= ?
           AND j.joined_at <= ?
         GROUP BY ch.telegram_chat_id
-      \`
+      `
       )
       .all(clientId, startOfDayTs, now);
 
@@ -2396,7 +2396,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
     // Per-channel last 7 days joins
     const sevenByChannel = db
       .prepare(
-        \`
+        `
         SELECT
           ch.telegram_chat_id AS channel_id,
           COUNT(*) AS total
@@ -2405,7 +2405,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
         WHERE ch.client_id = ?
           AND j.joined_at >= ?
         GROUP BY ch.telegram_chat_id
-      \`
+      `
       )
       .all(clientId, sevenDaysAgoTs);
 
@@ -2416,7 +2416,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
 
     const recentJoins = db
       .prepare(
-        \`
+        `
         SELECT
           j.joined_at,
           j.telegram_user_id,
@@ -2439,7 +2439,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
         WHERE ch.client_id = ?
         ORDER BY j.joined_at DESC
         LIMIT 50
-      \`
+      `
       )
       .all(clientId);
 
@@ -2624,11 +2624,11 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                 ? `<tr><td colspan="2" class="muted">No data yet</td></tr>`
                 : last7Days
                     .map(
-                      (d) => \`
+                      (d) => `
               <tr>
                 <td>\${d.date}</td>
                 <td>\${d.count}</td>
-              </tr>\`
+              </tr>`
                     )
                     .join('')
             }
@@ -2671,7 +2671,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                       const lpModeLabel =
                         lpModeRaw === 'subscribe' ? 'InitiateSubscribe → Subscribe' : 'InitiateLead → Lead';
                       const antiCrawlerLabel = ch.lp_anti_crawler ? 'On' : 'Off';
-                      return \`
+                      return `
               <tr>
                 <td>\${ch.telegram_title || '(no title)'}</td>
                 <td>\${ch.telegram_chat_id}</td>
@@ -2687,7 +2687,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                     <span class="muted">Event: \${lpModeLabel}, Anti-crawler: \${antiCrawlerLabel}</span>
                   </div>
                 </td>
-              </tr>\`;
+              </tr>`;
                     })
                     .join('')
             }
@@ -2778,7 +2778,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                         .toISOString()
                         .replace('T', ' ')
                         .substring(0, 19);
-                      return \`
+                      return `
               <tr>
                 <td>\${dt}</td>
                 <td>\${j.telegram_user_id}</td>
@@ -2795,7 +2795,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                 <td>\${j.utm_source || ''}</td>
                 <td>\${j.utm_medium || ''}</td>
                 <td>\${j.utm_campaign || ''}</td>
-              </tr>\`;
+              </tr>`;
                     })
                     .join('')
             }
