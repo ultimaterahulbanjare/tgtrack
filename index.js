@@ -3845,6 +3845,48 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 
 // API: Client login (JSON) - sets same cookie as HTML /login
+
+// API: Client channels list for LP Generator dropdown
+app.get('/api/client/channels', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'client') {
+      return res.status(403).json({ success: false, error: 'Not a client user' });
+    }
+
+    const clientRow = db
+      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+      .get(user.id);
+
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: 'Client workspace not found' });
+    }
+
+    const clientId = clientRow.id;
+
+    const channels = db
+      .prepare(`
+        SELECT
+          id,
+          telegram_chat_id,
+          telegram_title,
+          deep_link,
+          pixel_id,
+          lp_event_mode,
+          lp_anti_crawler
+        FROM channels
+        WHERE client_id = ?
+        ORDER BY id DESC
+      `)
+      .all(clientId);
+
+    return res.json({ success: true, channels });
+  } catch (err) {
+    console.error('❌ Error in GET /api/client/channels:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body || {};
