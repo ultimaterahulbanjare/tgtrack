@@ -576,6 +576,7 @@
       );
     }
 
+    
     function ClientLpManager() {
       const [channels,setChannels] = useState([]);
       const [rows,setRows] = useState([]);
@@ -589,6 +590,21 @@
         anti_crawler: false,
         status: 'draft'
       });
+      const [editingId,setEditingId] = useState(null);
+      const [detail,setDetail] = useState(null);
+      const [detailLoading,setDetailLoading] = useState(false);
+
+      const resetForm = () => {
+        setForm({
+          name: '',
+          channel_id: '',
+          template_key: 'generic',
+          lp_event_mode: 'lead',
+          anti_crawler: false,
+          status: 'draft'
+        });
+        setEditingId(null);
+      };
 
       const load = async () => {
         setMsg('', 'neutral');
@@ -598,35 +614,27 @@
             fetch(API_BASE + '/api/client/landing-pages'),
             fetch(API_BASE + '/api/client/channels')
           ]);
-          const lpData = await lpRes.json();
-          const chData = await chRes.json();
-
-          if (!lpData.success) {
-            setMsg(lpData.error || 'Unable to load landing pages.', 'err');
+          const lpJson = await lpRes.json();
+          const chJson = await chRes.json();
+          if (!lpJson.success) {
+            setMsg(lpJson.message || lpJson.error || 'Failed to load landing pages.', 'err');
           } else {
-            setRows(lpData.landing_pages || []);
+            setRows(lpJson.landing_pages || []);
           }
-
-          if (!chData.success) {
-            setMsg(prev => (prev ? prev + ' Also failed to load channels.' : (chData.error || 'Unable to load channels.')), 'err');
-          } else {
-            setChannels(chData.channels || []);
-          }
-
-          if ((!lpData.landing_pages || !lpData.landing_pages.length) && (!chData.channels || !chData.channels.length)) {
-            setMsg('No channels or landing pages yet. Add a channel from your main panel first.', 'neutral');
-          } else if (lpData.landing_pages && lpData.landing_pages.length) {
-            setMsg('Loaded ' + lpData.landing_pages.length + ' landing page(s).', 'ok');
+          if (chJson.success && Array.isArray(chJson.channels)) {
+            setChannels(chJson.channels);
           }
         } catch (err) {
           console.error(err);
-          setMsg('Network error while loading LPs/channels.', 'err');
+          setMsg('Failed to load landing pages.', 'err');
         } finally {
           setLoading(false);
         }
       };
 
-      useEffect(() => { load(); }, []);
+      useEffect(() => {
+        load();
+      }, []);
 
       const onChange = (e) => {
         const { name, value, type, checked } = e.target;
@@ -636,11 +644,14 @@
         }));
       };
 
-      const onCreate = async (e) => {
+      const onSubmit = async (e) => {
         e.preventDefault();
-        setMsg('', 'neutral');
-        if (!form.name || !form.channel_id) {
-          setMsg('Please enter LP name and select a channel.', 'err');
+        if (!form.name) {
+          setMsg('Please enter an internal LP name.', 'err');
+          return;
+        }
+        if (!form.channel_id) {
+          setMsg('Please select a channel.', 'err');
           return;
         }
         setLoading(true);
@@ -653,39 +664,38 @@
             anti_crawler: !!form.anti_crawler,
             status: form.status || 'draft'
           };
-          const res = await fetch(API_BASE + '/api/client/landing-pages', {
+          const url = editingId
+            ? API_BASE + '/api/client/landing-pages/' + editingId
+            : API_BASE + '/api/client/landing-pages';
+          const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
           const data = await res.json();
           if (!data.success) {
-            setMsg(data.message || data.error || 'Failed to create landing page.', 'err');
+            setMsg(data.message || data.error || 'Failed to save landing page.', 'err');
           } else {
-            setMsg('Landing page created.', 'ok');
-            setForm(prev => ({
-              ...prev,
-              name: '',
-              status: 'draft'
-            }));
+            setMsg(editingId ? 'Landing page updated.' : 'Landing page created.', 'ok');
+            resetForm();
             load();
           }
         } catch (err) {
           console.error(err);
-          setMsg('Network error while creating LP.', 'err');
+          setMsg('Failed to save landing page.', 'err');
         } finally {
           setLoading(false);
         }
       };
 
-      const onStatusChange = async (lpId, newStatus) => {
-        setMsg('', 'neutral');
+      const onStatusChange = async (id, status) => {
         setLoading(true);
         try {
-          const res = await fetch(API_BASE + '/api/client/landing-pages/' + lpId, {
+          const body = { status };
+          const res = await fetch(API_BASE + '/api/client/landing-pages/' + id, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status: newStatus })
+            body: JSON.stringify(body)
           });
           const data = await res.json();
           if (!data.success) {
@@ -696,24 +706,78 @@
           }
         } catch (err) {
           console.error(err);
-          setMsg('Network error while updating status.', 'err');
+          setMsg('Failed to update status.', 'err');
         } finally {
           setLoading(false);
         }
       };
 
+      const onEdit = (lp) => {
+        setEditingId(lp.id);
+        setForm({
+          name: lp.name || '',
+          channel_id: lp.channel_id ? String(lp.channel_id) : '',
+          template_key: lp.template_key || 'generic',
+          lp_event_mode: lp.lp_event_mode || 'lead',
+          anti_crawler: !!lp.anti_crawler,
+          status: lp.status || 'draft'
+        });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
+
+      const onDuplicate = async (lp) => {
+        setLoading(true);
+        try {
+          const res = await fetch(API_BASE + '/api/client/landing-pages/' + lp.id + '/duplicate', {
+            method: 'POST'
+          });
+          const data = await res.json();
+          if (!data.success) {
+            setMsg(data.message || data.error || 'Failed to duplicate LP.', 'err');
+          } else {
+            setMsg('Landing page duplicated as draft.', 'ok');
+            load();
+          }
+        } catch (err) {
+          console.error(err);
+          setMsg('Failed to duplicate LP.', 'err');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const onExportZip = (lp) => {
+        const url = API_BASE + '/api/client/landing-pages/' + lp.id + '/export-zip';
+        window.open(url, '_blank');
+      };
+
+      const openDetail = async (lp) => {
+        setDetailLoading(true);
+        setDetail(null);
+        try {
+          const res = await fetch(API_BASE + '/api/client/landing-pages/' + lp.id);
+          const data = await res.json();
+          if (!data.success) {
+            setMsg(data.message || data.error || 'Failed to load LP analytics.', 'err');
+          } else {
+            setDetail(data);
+          }
+        } catch (err) {
+          console.error(err);
+          setMsg('Failed to load LP analytics.', 'err');
+        } finally {
+          setDetailLoading(false);
+        }
+      };
+
       return (
         <div className="layout-two">
-          <div className="card">
-            <div className="card-header">
-              <div>
-                <h2>Landing Page generator (beta)</h2>
-                <div className="muted" style={{fontSize:12}}>
-                  Requires an active client session. Start with a simple LP per channel (max 10 published per channel).
-                </div>
-              </div>
+          <div>
+            <h2>Landing Page generator (beta)</h2>
+            <div className="muted" style={{fontSize:12,marginBottom:10}}>
+              Requires an active client session. Start with a simple LP per channel (max 10 published per channel).
             </div>
-            <form onSubmit={onCreate}>
+            <form onSubmit={onSubmit}>
               <div>
                 <label>Internal LP name</label>
                 <input
@@ -722,7 +786,6 @@
                   value={form.name}
                   onChange={onChange}
                   placeholder="Matchday v1 / Diwali Offer LP"
-                  required
                 />
               </div>
               <div>
@@ -731,7 +794,6 @@
                   name="channel_id"
                   value={form.channel_id}
                   onChange={onChange}
-                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
                 >
                   <option value="">Select a channel…</option>
                   {channels.map(ch => (
@@ -750,7 +812,6 @@
                   name="template_key"
                   value={form.template_key}
                   onChange={onChange}
-                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
                 >
                   <option value="generic">Generic promo</option>
                   <option value="forex">Forex signals</option>
@@ -765,12 +826,11 @@
                   name="lp_event_mode"
                   value={form.lp_event_mode}
                   onChange={onChange}
-                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
                 >
                   <option value="lead">InitiateLead → Lead</option>
                   <option value="subscribe">InitiateSubscribe → Subscribe</option>
                 </select>
-                <div className="muted" style={{fontSize:11,marginTop:3}}>
+                <div className="muted" style={{fontSize:11}}>
                   One pixel = one main optimization event (Lead or Subscribe) across all LPs/channels.
                 </div>
               </div>
@@ -779,48 +839,47 @@
                   <input
                     type="checkbox"
                     name="anti_crawler"
-                    checked={form.anti_crawler}
+                    checked={!!form.anti_crawler}
                     onChange={onChange}
-                    style={{marginRight:6}}
-                  />
+                  />{' '}
                   Enable anti-crawler for this LP
                 </label>
               </div>
               <div>
-                <label>Initial status</label>
+                <label>Status</label>
                 <select
                   name="status"
                   value={form.status}
                   onChange={onChange}
-                  style={{width:'100%',padding:'7px 9px',borderRadius:10,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:13}}
                 >
                   <option value="draft">Draft</option>
                   <option value="published">Published</option>
                   <option value="archived">Archived</option>
                 </select>
-                <div className="muted" style={{fontSize:11,marginTop:3}}>
+                <div className="muted" style={{fontSize:11}}>
                   Publishing respects the 10 published LPs per channel limit at backend.
                 </div>
               </div>
-              <button className="primary" type="submit" disabled={loading}>
-                {loading ? 'Saving…' : 'Create LP'}
+              <button type="submit">
+                {editingId ? (loading ? 'Saving…' : 'Update LP') : (loading ? 'Saving…' : 'Create LP')}
               </button>
-              {msg && <div className={'status ' + typ} style={{marginTop:8}}>{msg}</div>}
+              {editingId && (
+                <button type="button" className="secondary" style={{marginLeft:8}} onClick={resetForm}>
+                  Cancel edit
+                </button>
+              )}
+              {msg && <div className={'msg ' + typ} style={{marginTop:8}}>{msg}</div>}
             </form>
           </div>
 
-          <div className="card">
-            <div className="card-header">
-              <div>
-                <h2>Your landing pages</h2>
-                <div className="muted" style={{fontSize:12}}>
-                  Basic per-LP stats (views, pre-leads) via /lp2 + /api/v1/lp-event.
-                </div>
-              </div>
-              <button className="secondary" type="button" onClick={load}>
-                {loading ? 'Refreshing…' : 'Refresh'}
-              </button>
+          <div>
+            <h2>Your landing pages</h2>
+            <div className="muted" style={{fontSize:12,marginBottom:6}}>
+              Basic per-LP stats (views, pre-leads) via /lp2 + /api/v1/lp-event.
             </div>
+            <button className="secondary" type="button" onClick={load}>
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
             {rows && rows.length ? (
               <table>
                 <thead>
@@ -833,20 +892,25 @@
                     <th>Views</th>
                     <th>Pre-leads</th>
                     <th>Auto URL</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map(r => (
                     <tr key={r.id}>
                       <td>{r.id}</td>
-                      <td>{r.name}</td>
+                      <td>
+                        <button type="button" className="link-btn" onClick={() => openDetail(r)}>
+                          {r.name}
+                        </button>
+                      </td>
                       <td>{r.telegram_title || ('Channel ' + r.channel_id)}</td>
                       <td>{r.template_key || '-'}</td>
                       <td>
                         <select
                           value={r.status}
                           onChange={(e) => onStatusChange(r.id, e.target.value)}
-                          style={{padding:'3px 6px',borderRadius:8,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:11}}
+                          style={{padding:'3px 6px',borderRadius:999,border:'1px solid #374151',background:'#020617',color:'#e5e7eb',fontSize:11}}
                         >
                           <option value="draft">draft</option>
                           <option value="published">published</option>
@@ -858,6 +922,13 @@
                       <td style={{fontSize:10}}>
                         {r.slug ? '/lp2/' + r.slug : '-'}
                       </td>
+                      <td style={{fontSize:11,whiteSpace:'nowrap'}}>
+                        <button type="button" className="link-btn" onClick={() => onEdit(r)}>Edit</button>
+                        {' · '}
+                        <button type="button" className="link-btn" onClick={() => onDuplicate(r)}>Duplicate</button>
+                        {' · '}
+                        <button type="button" className="link-btn" onClick={() => onExportZip(r)}>Export ZIP</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -867,13 +938,45 @@
                 No landing pages yet.
               </div>
             )}
+
+            {detailLoading && (
+              <div className="muted" style={{fontSize:12,marginTop:10}}>Loading LP analytics…</div>
+            )}
+
+            {detail && detail.landing_page && (
+              <div className="card" style={{marginTop:12,padding:12,background:'#020617',border:'1px solid #1f2937'}}>
+                <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>
+                  LP #{detail.landing_page.id}: {detail.landing_page.name}
+                </div>
+                <div className="muted" style={{fontSize:11,marginBottom:6}}>
+                  Slug: {detail.landing_page.slug} · Channel ID: {detail.landing_page.channel_id}
+                </div>
+                <div style={{display:'flex',gap:16,fontSize:12,marginBottom:8}}>
+                  <div>Views: <strong>{detail.stats.totals.views}</strong></div>
+                  <div>Pre-leads: <strong>{detail.stats.totals.pre_leads}</strong></div>
+                  <div>Clicks: <strong>{detail.stats.totals.clicks}</strong></div>
+                </div>
+                {detail.stats.per_day && detail.stats.per_day.length ? (
+                  <div style={{fontSize:11,marginTop:4}}>
+                    <div style={{marginBottom:2}}>Last days:</div>
+                    <ul>
+                      {detail.stats.per_day.map(row => (
+                        <li key={row.day}>
+                          {row.day}: {row.views} views, {row.pre_leads} pre-leads, {row.clicks} clicks
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="muted" style={{fontSize:11}}>No event data yet for this LP.</div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       );
     }
-
-
-    function App() {
+function App() {
       const [tab,setTab] = useState('signup');
       return (
         <div className="shell">
