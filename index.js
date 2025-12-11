@@ -2682,7 +2682,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
 
         <h2 class="section-title">Add / update channel</h2>
         <div class="card">
-          <form method="POST" action="/panel/client/${client.id}/channels">
+          <form method="POST" action="/panel/client/${client.id}/channels/new">
             <div class="field">
               <label for="telegram_title">Channel title</label>
               <input id="telegram_title" name="telegram_title" type="text" required />
