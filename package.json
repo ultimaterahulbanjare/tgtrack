@@ -18,6 +18,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "express-useragent": "^1.0.15",
-    "geoip-lite": "^1.4.10"
+    "geoip-lite": "^1.4.10",
+    "adm-zip": "^0.5.10"
   }
 }

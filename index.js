@@ -4032,6 +4032,144 @@ app.get('/api/client/landing-pages', requireAuth, (req, res) => {
   }
 });
 
+
+app.get('/api/client/landing-pages/:id', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'client') {
+      return res.status(403).json({ success: false, error: 'Not a client user' });
+    }
+
+    const clientRow = db
+      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+      .get(user.id);
+
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: 'Client workspace not found' });
+    }
+
+    const clientId = clientRow.id;
+    const lpId = parseInt(req.params.id, 10);
+    if (!lpId || Number.isNaN(lpId)) {
+      return res.status(400).json({ success: false, error: 'Invalid LP id' });
+    }
+
+    const lp = db
+      .prepare(
+        `
+        SELECT
+          lp.*,
+          ch.telegram_title,
+          ch.telegram_chat_id
+        FROM landing_pages lp
+        JOIN channels ch ON ch.id = lp.channel_id
+        WHERE lp.id = ? AND lp.client_id = ?
+        LIMIT 1
+      `
+      )
+      .get(lpId, clientId);
+
+    if (!lp) {
+      return res.status(404).json({ success: false, error: 'Landing page not found' });
+    }
+
+    const totals = db
+      .prepare(
+        `
+        SELECT
+          SUM(CASE WHEN event_type = 'pageview' THEN 1 ELSE 0 END) AS views,
+          SUM(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicks,
+          SUM(CASE WHEN event_type = 'pre_lead' THEN 1 ELSE 0 END) AS pre_leads
+        FROM lp_events
+        WHERE client_id = ? AND lp_id = ?
+      `
+      )
+      .get(clientId, lpId) || { views: 0, clicks: 0, pre_leads: 0 };
+
+    const perDay = db
+      .prepare(
+        `
+        SELECT
+          strftime('%Y-%m-%d', created_at, 'unixepoch') AS day,
+          SUM(CASE WHEN event_type = 'pageview' THEN 1 ELSE 0 END) AS views,
+          SUM(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicks,
+          SUM(CASE WHEN event_type = 'pre_lead' THEN 1 ELSE 0 END) AS pre_leads
+        FROM lp_events
+        WHERE client_id = ? AND lp_id = ?
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 30
+      `
+      )
+      .all(clientId, lpId);
+
+    const byCountry = db
+      .prepare(
+        `
+        SELECT
+          COALESCE(country, 'Unknown') AS country,
+          COUNT(*) AS count
+        FROM lp_events
+        WHERE client_id = ? AND lp_id = ?
+        GROUP BY country
+        ORDER BY count DESC
+        LIMIT 10
+      `
+      )
+      .all(clientId, lpId);
+
+    const byDevice = db
+      .prepare(
+        `
+        SELECT
+          COALESCE(device_type, 'Unknown') AS device_type,
+          COUNT(*) AS count
+        FROM lp_events
+        WHERE client_id = ? AND lp_id = ?
+        GROUP BY device_type
+        ORDER BY count DESC
+        LIMIT 10
+      `
+      )
+      .all(clientId, lpId);
+
+    const bySource = db
+      .prepare(
+        `
+        SELECT
+          COALESCE(source, 'Unknown') AS source,
+          COUNT(*) AS count
+        FROM lp_events
+        WHERE client_id = ? AND lp_id = ?
+        GROUP BY source
+        ORDER BY count DESC
+        LIMIT 10
+      `
+      )
+      .all(clientId, lpId);
+
+    return res.json({
+      success: true,
+      landing_page: lp,
+      stats: {
+        totals: {
+          views: totals.views || 0,
+          clicks: totals.clicks || 0,
+          pre_leads: totals.pre_leads || 0
+        },
+        per_day: perDay,
+        by_country: byCountry,
+        by_device: byDevice,
+        by_source: bySource
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in GET /api/client/landing-pages/:id:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+
 // API: Client LP create
 app.post('/api/client/landing-pages', requireAuth, (req, res) => {
   try {
@@ -4187,6 +4325,7 @@ app.post('/api/client/landing-pages', requireAuth, (req, res) => {
 });
 
 // API: Client LP update
+
 app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
   try {
     const user = req.user;
@@ -4194,10 +4333,9 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
       return res.status(403).json({ success: false, error: 'Not a client user' });
     }
 
-    const cntRow = db
-  prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published'")
-  get(channel_id);
-
+    const clientRow = db
+      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+      .get(user.id);
 
     if (!clientRow) {
       return res.status(404).json({ success: false, error: 'Client workspace not found' });
@@ -4205,7 +4343,7 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
 
     const clientId = clientRow.id;
     const lpId = parseInt(req.params.id, 10);
-    if (!lpId) {
+    if (!lpId || Number.isNaN(lpId)) {
       return res.status(400).json({ success: false, error: 'Invalid LP id' });
     }
 
@@ -4217,21 +4355,35 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
       return res.status(404).json({ success: false, error: 'Landing page not found' });
     }
 
-    let { name, channel_id, template_key, slug, lp_event_mode, anti_crawler, status, html_config, custom_domain_url } =
-      req.body || {};
+    let {
+      name,
+      channel_id,
+      template_key,
+      lp_event_mode,
+      anti_crawler,
+      status,
+      custom_domain_url
+    } = req.body || {};
 
     name = name !== undefined ? String(name || '').trim() : existing.name;
-    template_key = template_key !== undefined ? String(template_key || '').trim().toLowerCase() : existing.template_key;
-    slug = slug !== undefined ? String(slug || '').trim() : existing.slug;
+    channel_id = channel_id !== undefined ? parseInt(channel_id, 10) : existing.channel_id;
+    template_key =
+      template_key !== undefined
+        ? String(template_key || '').trim().toLowerCase()
+        : existing.template_key;
     lp_event_mode =
-      lp_event_mode !== undefined ? String(lp_event_mode || '').trim().toLowerCase() : existing.lp_event_mode;
-    status = status !== undefined ? String(status || '').trim().toLowerCase() : existing.status;
+      lp_event_mode !== undefined
+        ? String(lp_event_mode || '').trim().toLowerCase()
+        : existing.lp_event_mode;
+    status =
+      status !== undefined
+        ? String(status || '').trim().toLowerCase()
+        : existing.status;
     anti_crawler = anti_crawler !== undefined ? (anti_crawler ? 1 : 0) : existing.anti_crawler;
     custom_domain_url =
       custom_domain_url !== undefined ? (custom_domain_url || null) : existing.custom_domain_url;
 
-    channel_id = channel_id !== undefined ? parseInt(channel_id, 10) : existing.channel_id;
-    if (!channel_id) {
+    if (!channel_id || Number.isNaN(channel_id)) {
       return res.status(400).json({ success: false, error: 'channel_id invalid' });
     }
 
@@ -4254,19 +4406,11 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
       status = existing.status || 'draft';
     }
 
-    if (!slug) {
-      slug = generateLpSlug(name);
-    } else {
-      slug = slugifyForUrl(slug);
-      if (!slug) {
-        slug = existing.slug;
-      }
-    }
-
+    // enforce per-channel 10 published LP limit when transitioning to published
     if (status === 'published' && existing.status !== 'published') {
       const cntRow = db
-        .prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published' AND id != ?")
-        .get(channel_id, lpId);
+        .prepare("SELECT COUNT(*) AS cnt FROM landing_pages WHERE channel_id = ? AND status = 'published'")
+        .get(channel_id);
       const publishedCount = (cntRow && cntRow.cnt) || 0;
       if (publishedCount >= 10) {
         return res.status(400).json({
@@ -4277,32 +4421,16 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
       }
     }
 
-    let htmlConfigStr = existing.html_config || '{}';
-    try {
-      if (html_config !== undefined) {
-        if (typeof html_config === 'string') {
-          JSON.parse(html_config);
-          htmlConfigStr = html_config;
-        } else if (html_config && typeof html_config === 'object') {
-          htmlConfigStr = JSON.stringify(html_config);
-        }
-      }
-    } catch (e) {
-      htmlConfigStr = existing.html_config || '{}';
-    }
-
     const now = Math.floor(Date.now() / 1000);
-    const autoHostUrl = '/lp2/' + slug;
+    const autoHostUrl = existing.auto_host_url || ('/lp2/' + existing.slug);
 
     const stmt = db.prepare(`
       UPDATE landing_pages
       SET
         channel_id = ?,
         name = ?,
-        slug = ?,
         template_key = ?,
         status = ?,
-        html_config = ?,
         lp_event_mode = ?,
         anti_crawler = ?,
         auto_host_url = ?,
@@ -4314,10 +4442,8 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
     stmt.run(
       channel_id,
       name,
-      slug,
       template_key,
       status,
-      htmlConfigStr,
       lp_event_mode,
       anti_crawler,
       autoHostUrl,
@@ -4334,7 +4460,7 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
         client_id: clientId,
         channel_id,
         name,
-        slug,
+        slug: existing.slug,
         template_key,
         status,
         auto_host_url: autoHostUrl,
@@ -4346,6 +4472,346 @@ app.post('/api/client/landing-pages/:id', requireAuth, (req, res) => {
     return res.status(500).json({ success: false, error: 'Internal error' });
   }
 });
+
+
+app.post('/api/client/landing-pages/:id/duplicate', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'client') {
+      return res.status(403).json({ success: false, error: 'Not a client user' });
+    }
+
+    const clientRow = db
+      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+      .get(user.id);
+
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: 'Client workspace not found' });
+    }
+
+    const clientId = clientRow.id;
+    const lpId = parseInt(req.params.id, 10);
+    if (!lpId || Number.isNaN(lpId)) {
+      return res.status(400).json({ success: false, error: 'Invalid LP id' });
+    }
+
+    const existing = db
+      .prepare('SELECT * FROM landing_pages WHERE id = ? AND client_id = ? LIMIT 1')
+      .get(lpId, clientId);
+
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Landing page not found' });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const newName = existing.name + ' (copy)';
+    const newSlug = generateLpSlug(newName);
+
+    const stmt = db.prepare(`
+      INSERT INTO landing_pages (
+        client_id,
+        channel_id,
+        name,
+        slug,
+        template_key,
+        status,
+        html_config,
+        lp_event_mode,
+        anti_crawler,
+        auto_host_url,
+        custom_domain_url,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const info = stmt.run(
+      existing.client_id,
+      existing.channel_id,
+      newName,
+      newSlug,
+      existing.template_key,
+      'draft',
+      existing.html_config,
+      existing.lp_event_mode,
+      existing.anti_crawler,
+      '/lp2/' + newSlug,
+      existing.custom_domain_url,
+      now,
+      now
+    );
+
+    return res.json({
+      success: true,
+      landing_page: {
+        id: info.lastInsertRowid,
+        client_id: existing.client_id,
+        channel_id: existing.channel_id,
+        name: newName,
+        slug: newSlug,
+        template_key: existing.template_key,
+        status: 'draft',
+        auto_host_url: '/lp2/' + newSlug,
+        custom_domain_url: existing.custom_domain_url
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in POST /api/client/landing-pages/:id/duplicate:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+const AdmZip = require('adm-zip');
+
+app.get('/api/client/landing-pages/:id/export-zip', requireAuth, (req, res) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'client') {
+      return res.status(403).json({ success: false, error: 'Not a client user' });
+    }
+
+    const clientRow = db
+      .prepare('SELECT * FROM clients WHERE login_user_id = ? LIMIT 1')
+      .get(user.id);
+
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: 'Client workspace not found' });
+    }
+
+    const clientId = clientRow.id;
+    const lpId = parseInt(req.params.id, 10);
+    if (!lpId || Number.isNaN(lpId)) {
+      return res.status(400).json({ success: false, error: 'Invalid LP id' });
+    }
+
+    const row = db
+      .prepare(
+        `
+        SELECT
+          lp.id,
+          lp.client_id,
+          lp.channel_id,
+          lp.name,
+          lp.slug,
+          lp.template_key,
+          lp.lp_event_mode,
+          lp.anti_crawler,
+          ch.telegram_chat_id,
+          ch.telegram_title,
+          ch.deep_link,
+          ch.pixel_id,
+          c.name AS client_name,
+          c.public_key
+        FROM landing_pages lp
+        JOIN channels ch ON ch.id = lp.channel_id
+        JOIN clients c ON c.id = lp.client_id
+        WHERE lp.id = ? AND lp.client_id = ?
+        LIMIT 1
+      `
+      )
+      .get(lpId, clientId);
+
+    if (!row) {
+      return res.status(404).json({ success: false, error: 'Landing page not found' });
+    }
+
+    const pixelId = row.pixel_id || '';
+    const deepLink = row.deep_link || `https://t.me/${row.telegram_chat_id}`;
+    const channelTitle = row.telegram_title || 'My Telegram Channel';
+    const clientName = row.client_name || 'Our Team';
+    const publicKey = row.public_key || '';
+    const telegramChatId = String(row.telegram_chat_id || '');
+    const lpModeRaw = (row.lp_event_mode || '').toLowerCase();
+    const lpMode = lpModeRaw === 'subscribe' ? 'subscribe' : 'lead';
+    const fbInitiateEvent = lpMode === 'subscribe' ? 'InitiateSubscribe' : 'InitiateLead';
+    const antiCrawlerEnabled = row.anti_crawler ? true : false;
+
+    const antiCrawlerBlock = antiCrawlerEnabled
+      ? `
+    <script>
+      (function() {
+        try {
+          var ua = (navigator.userAgent || '').toLowerCase();
+          var badKeywords = ['bot', 'crawler', 'spider', 'preview', 'facebookexternalhit', 'facebot'];
+          for (var i = 0; i < badKeywords.length; i++) {
+            if (ua.indexOf(badKeywords[i]) !== -1) {
+              document.documentElement.innerHTML = '<head><meta name="robots" content="noindex"><title>Not available</title></head><body></body>';
+              return;
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
+    `
+      : '';
+
+    const pixelBlock = pixelId
+      ? `
+    <!-- Meta Pixel Code -->
+    <script>
+      !(function(f,b,e,v,n,t,s){
+        if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+        n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+        if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+        n.queue=[];t=b.createElement(e);t.async=!0;
+        t.src='https://connect.facebook.net/en_US/fbevents.js';
+        s=b.getElementsByTagName(e)[0];
+        s.parentNode.insertBefore(t,s);
+      })(window, document,'script');
+      fbq('init', '${pixelId}');
+      fbq('track', 'PageView');
+    </script>
+    <noscript>
+      <img height="1" width="1" style="display:none"
+           src="https://www.facebook.com/tr?id=${pixelId}&ev=PageView&noscript=1"/>
+    </noscript>
+    <!-- End Meta Pixel Code -->
+    `
+      : '';
+
+    const pageHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${channelTitle}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #0f172a, #020617);
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.96);
+      border-radius: 18px;
+      padding: 22px 20px;
+      max-width: 430px;
+      width: 100%;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(148, 163, 184, 0.15);
+    }
+    h1 {
+      font-size: 22px;
+      line-height: 1.2;
+      margin-bottom: 8px;
+      color: #f9fafb;
+      text-align: left;
+    }
+    .sub {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-bottom: 16px;
+    }
+    .cta-btn {
+      margin-top: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      padding: 11px 16px;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      color: #022c22;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .footer {
+      margin-top: 10px;
+      font-size: 10px;
+      color: #6b7280;
+      text-align: center;
+    }
+  </style>
+  ${antiCrawlerBlock}
+  ${pixelBlock}
+</head>
+<body>
+  <div class="card">
+    <h1>${channelTitle}</h1>
+    <div class="sub">
+      Curated updates & insights by <strong>${clientName}</strong>. Tap below to join the Telegram channel.
+    </div>
+    <button class="cta-btn" onclick="handleJoinClick(event)">
+      <span>📲 Join Telegram Channel</span>
+    </button>
+    <div class="footer">
+      Powered by your private tracking workspace. Channel ID: ${telegramChatId}
+    </div>
+  </div>
+  <script>
+    const CONFIG = {
+      fbInitiateEvent: '${fbInitiateEvent}',
+      publicKey: '${publicKey}',
+      channelId: '${telegramChatId}',
+      deepLink: '${deepLink}'
+    };
+
+    function sendLpEvent(type, source) {
+      try {
+        fetch('/api/v1/lp-event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            public_key: CONFIG.publicKey,
+            channel_id: CONFIG.channelId,
+            lp_id: ${row.id},
+            event_type: type,
+            source: source
+          })
+        }).catch(function(){});
+      } catch (e) {}
+    }
+
+    function handleJoinClick(e) {
+      if (e && e.preventDefault) e.preventDefault();
+      try {
+        if (window.fbq && CONFIG.fbInitiateEvent) {
+          fbq('track', CONFIG.fbInitiateEvent);
+        }
+      } catch (e) {}
+      sendLpEvent('click', 'lp_zip_button_click');
+      sendLpEvent('pre_lead', 'lp_zip_button_click');
+      try {
+        fetch('/api/v1/track/pre-lead', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            public_key: CONFIG.publicKey,
+            channel_id: CONFIG.channelId,
+            source: 'lp_zip_button_click',
+            url: window.location.href
+          })
+        }).catch(function(){});
+      } catch (e) {}
+      window.location.href = CONFIG.deepLink;
+    }
+  </script>
+</body>
+</html>`;
+
+    const zip = new AdmZip();
+    zip.addFile('index.html', Buffer.from(pageHtml, 'utf8'));
+    const zipBuffer = zip.toBuffer();
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="lp-' + row.slug + '.zip"');
+    res.send(zipBuffer);
+  } catch (err) {
+    console.error('❌ Error in GET /api/client/landing-pages/:id/export-zip:', err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
+  }
+});
+
+
 
 
 app.post('/api/owner/login', async (req, res) => {
