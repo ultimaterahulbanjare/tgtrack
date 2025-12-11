@@ -171,7 +171,121 @@
     @media (max-width:768px){
       .layout-two { grid-template-columns:minmax(0,1fr); }
     }
-  </style>
+  
+    /* --- Pro app layout additions --- */
+    .app-shell {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .app-title {
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .logo-dot {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      background: radial-gradient(circle at 30% 20%, #22c55e, #15803d);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:15px;
+      font-weight:700;
+      color:#022c22;
+      box-shadow:0 0 0 1px rgba(34,197,94,0.35), 0 12px 30px rgba(22,163,74,0.45);
+    }
+    .app-title-text {
+      display:flex;
+      flex-direction:column;
+    }
+    .app-title-text h1 {
+      font-size:18px;
+      margin:0;
+      color:#f9fafb;
+    }
+    .app-title-text span {
+      font-size:12px;
+      color:#9ca3af;
+    }
+    .env-pill {
+      border-radius:999px;
+      padding:3px 10px;
+      border:1px solid #374151;
+      font-size:11px;
+      color:#9ca3af;
+      background:rgba(15,23,42,0.85);
+    }
+    .app-body {
+      display:flex;
+      gap:16px;
+      align-items:flex-start;
+    }
+    .app-nav {
+      width:220px;
+      min-width:200px;
+    }
+    .app-nav-group {
+      font-size:11px;
+      text-transform:uppercase;
+      color:#6b7280;
+      letter-spacing:0.04em;
+      margin-bottom:6px;
+      margin-top:14px;
+    }
+    .app-nav .tab-btn-pro {
+      width:100%;
+      text-align:left;
+      padding:8px 10px;
+      border-radius:10px;
+      border:1px solid transparent;
+      background:transparent;
+      color:#e5e7eb;
+      font-size:12px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      cursor:pointer;
+      margin-bottom:4px;
+    }
+    .app-nav .tab-btn-pro span {
+      font-size:11px;
+      color:#6b7280;
+    }
+    .app-nav .tab-btn-pro.active {
+      background:linear-gradient(135deg,#111827,#020617);
+      border-color:#374151;
+    }
+    .app-main {
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      gap:16px;
+    }
+    @media (max-width:900px){
+      .app-body {
+        flex-direction:column;
+      }
+      .app-nav {
+        width:100%;
+        display:flex;
+        flex-wrap:wrap;
+        gap:6px;
+      }
+      .app-nav .tab-btn-pro {
+        width:auto;
+        flex:1;
+      }
+    }
+</style>
 </head>
 <body>
   <div id="root"></div>
@@ -976,52 +1090,110 @@
         </div>
       );
     }
-function App() {
-      const [tab,setTab] = useState('signup');
-      return (
-        <div className="shell">
-          <h1>Universal Tracking – Phase 1</h1>
-          <div className="muted">
-            Auth + plan selection + owner approval on top of your existing tracking backend.
-          </div>
-          <div className="tabs">
-            <button className={'tab-btn ' + (tab==='signup'?'active':'')} onClick={()=>setTab('signup')}>
-              1) Client signup
-            </button>
-            <button className={'tab-btn ' + (tab==='client-login'?'active':'')} onClick={()=>setTab('client-login')}>
-              2) Client login
-            </button>
-            <button className={'tab-btn ' + (tab==='client-me'?'active':'')} onClick={()=>setTab('client-me')}>
-              3) Session preview
-            </button>
-            <button className={'tab-btn ' + (tab==='lp'?'active':'')} onClick={()=>setTab('lp')}>
-              4) Landing Pages (beta)
-            </button>
-            <button className={'tab-btn ' + (tab==='owner'?'active':'')} onClick={()=>setTab('owner')}>
-              5) Owner approvals
-            </button>
-          </div>
 
-          {tab === 'signup' && <SignupCard />}
-          {tab === 'client-login' && (
-            <div className="layout-two">
-              <ClientLoginCard />
-              <ClientMeCard />
+    function App() {
+      const [tab,setTab] = useState('client-login');
+
+      return (
+        <div className="app-shell">
+          <header className="app-header">
+            <div className="app-title">
+              <div className="logo-dot">U</div>
+              <div className="app-title-text">
+                <h1>Universal Tracking Console</h1>
+                <span>Multi-client Telegram + Meta tracking workspace</span>
+              </div>
             </div>
-          )}
-          {tab === 'client-me' && <ClientMeCard />}
-          {tab === 'lp' && <ClientLpManager />}
-          {tab === 'owner' && (
-            <div className="layout-two">
-              <OwnerLoginCard />
-              <OwnerPendingCard />
+            <div className="env-pill">
+              Phase 2 · LP generator + SaaS auth
             </div>
-          )}
+          </header>
+
+          <div className="app-body">
+            <nav className="app-nav">
+              <div className="app-nav-group">Client access</div>
+              <button
+                className={'tab-btn-pro ' + (tab === 'signup' ? 'active' : '')}
+                onClick={() => setTab('signup')}
+              >
+                <div>
+                  New client signup
+                  <div><span>Self-service registration</span></div>
+                </div>
+                <div>➕</div>
+              </button>
+              <button
+                className={'tab-btn-pro ' + (tab === 'client-login' ? 'active' : '')}
+                onClick={() => setTab('client-login')}
+              >
+                <div>
+                  Client login
+                  <div><span>Access your workspace</span></div>
+                </div>
+                <div>🔐</div>
+              </button>
+              <button
+                className={'tab-btn-pro ' + (tab === 'client-me' ? 'active' : '')}
+                onClick={() => setTab('client-me')}
+              >
+                <div>
+                  Client profile
+                  <div><span>Plan, limits & keys</span></div>
+                </div>
+                <div>👤</div>
+              </button>
+
+              <div className="app-nav-group">Landing pages</div>
+              <button
+                className={'tab-btn-pro ' + (tab === 'lp' ? 'active' : '')}
+                onClick={() => setTab('lp')}
+              >
+                <div>
+                  LP generator
+                  <div><span>Create, edit, analytics</span></div>
+                </div>
+                <div>📄</div>
+              </button>
+
+              <div className="app-nav-group">Owner / admin</div>
+              <button
+                className={'tab-btn-pro ' + (tab === 'owner' ? 'active' : '')}
+                onClick={() => setTab('owner')}
+              >
+                <div>
+                  Owner approvals
+                  <div><span>Review & activate clients</span></div>
+                </div>
+                <div>🛡️</div>
+              </button>
+            </nav>
+
+            <main className="app-main">
+              {tab === 'signup' && <SignupCard />}
+
+              {tab === 'client-login' && (
+                <div className="layout-two">
+                  <ClientLoginCard />
+                  <ClientMeCard />
+                </div>
+              )}
+
+              {tab === 'client-me' && <ClientMeCard />}
+
+              {tab === 'lp' && <ClientLpManager />}
+
+              {tab === 'owner' && (
+                <div className="layout-two">
+                  <OwnerLoginCard />
+                  <OwnerPendingCard />
+                </div>
+              )}
+            </main>
+          </div>
         </div>
       );
     }
-
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
 </html>
