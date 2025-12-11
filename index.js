@@ -2612,8 +2612,8 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                     .map(
                       (d) => `
               <tr>
-                <td>\${d.date}</td>
-                <td>\${d.count}</td>
+                <td>${d.date}</td>
+                <td>${d.count}</td>
               </tr>`
                     )
                     .join('')
@@ -2651,7 +2651,7 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                       const autoLpUrl = `/lp/${ch.id}`;
                       const customLp = ch.lp_url || '';
                       const customDisplay = customLp
-                        ? `<a href="\${customLp}" target="_blank">\${customLp}</a>`
+                        ? `<a href="${customLp}" target="_blank">${customLp}</a>`
                         : 'Not set';
                       const lpModeRaw = (ch.lp_event_mode || '').toLowerCase();
                       const lpModeLabel =
@@ -2659,18 +2659,18 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                       const antiCrawlerLabel = ch.lp_anti_crawler ? 'On' : 'Off';
                       return `
               <tr>
-                <td>\${ch.telegram_title || '(no title)'}</td>
-                <td>\${ch.telegram_chat_id}</td>
-                <td>\${ch.deep_link || ''}</td>
-                <td>\${ch.pixel_id || ''}</td>
-                <td>\${tot}</td>
-                <td>\${todayCount}</td>
-                <td>\${last7Count}</td>
+                <td>${ch.telegram_title || '(no title)'}</td>
+                <td>${ch.telegram_chat_id}</td>
+                <td>${ch.deep_link || ''}</td>
+                <td>${ch.pixel_id || ''}</td>
+                <td>${tot}</td>
+                <td>${todayCount}</td>
+                <td>${last7Count}</td>
                 <td>
                   <div style="display:flex;flex-direction:column;gap:4px;">
-                    <span class="muted">Auto: <a href="\${autoLpUrl}" target="_blank">\${autoLpUrl}</a></span>
-                    <span class="muted">Custom: \${customDisplay}</span>
-                    <span class="muted">Event: \${lpModeLabel}, Anti-crawler: \${antiCrawlerLabel}</span>
+                    <span class="muted">Auto: <a href="${autoLpUrl}" target="_blank">${autoLpUrl}</a></span>
+                    <span class="muted">Custom: ${customDisplay}</span>
+                    <span class="muted">Event: ${lpModeLabel}, Anti-crawler: ${antiCrawlerLabel}</span>
                   </div>
                 </td>
               </tr>`;
@@ -2766,21 +2766,21 @@ app.get('/panel/client/:id', requireAuth, (req, res) => {
                         .substring(0, 19);
                       return `
               <tr>
-                <td>\${dt}</td>
-                <td>\${j.telegram_user_id}</td>
-                <td>\${j.telegram_first_name || ''}</td>
-                <td>\${j.telegram_last_name || ''}</td>
-                <td>\${j.telegram_username || '(no username)'}</td>
-                <td>\${j.channel_title || ''}</td>
-                <td>\${j.ip || ''}</td>
-                <td>\${j.country || ''}</td>
-                <td>\${j.device_type || ''}</td>
-                <td>\${j.browser || ''}</td>
-                <td>\${j.os || ''}</td>
-                <td>\${j.source || ''}</td>
-                <td>\${j.utm_source || ''}</td>
-                <td>\${j.utm_medium || ''}</td>
-                <td>\${j.utm_campaign || ''}</td>
+                <td>${dt}</td>
+                <td>${j.telegram_user_id}</td>
+                <td>${j.telegram_first_name || ''}</td>
+                <td>${j.telegram_last_name || ''}</td>
+                <td>${j.telegram_username || '(no username)'}</td>
+                <td>${j.channel_title || ''}</td>
+                <td>${j.ip || ''}</td>
+                <td>${j.country || ''}</td>
+                <td>${j.device_type || ''}</td>
+                <td>${j.browser || ''}</td>
+                <td>${j.os || ''}</td>
+                <td>${j.source || ''}</td>
+                <td>${j.utm_source || ''}</td>
+                <td>${j.utm_medium || ''}</td>
+                <td>${j.utm_campaign || ''}</td>
               </tr>`;
                     })
                     .join('')
